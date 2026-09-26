@@ -1,0 +1,94 @@
+mncs 0.18;
+
+// Native contracts for deterministic cell layout: block stacking,
+// equal row splits with remainder to the last child, nested rows,
+// pure resize, and zero-width refusal.
+
+module mncs.ui.test.layout.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.layout;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+fn layout_of(t: Table, w: u64) -> (result: Layout) {
+    return match layout_table(t, w) {
+        LayoutOut.Value { l } => l,
+        LayoutOut.BadWidth => empty_layout(),
+    };
+}
+
+// screen1 > col2 > text3, text4: full-width stack, heights sum.
+fn stack() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, column(2, 1, nm()));
+    let t3: Table = push_ok(t2, text_line(3, 2, nm()));
+    return push_ok(t3, text_line(4, 2, nm()));
+}
+
+test column_stacks_full_width() -> (result: TestResult) {
+    let l: Layout = layout_of(stack(), 40);
+    let r0: Rect = l.rects[0];
+    let r2: Rect = l.rects[2];
+    let r3: Rect = l.rects[3];
+    let good: bool = r0.x == 0 && r0.y == 0 && r0.w == 40 && r0.h == 2;
+    let third: bool = r2.x == 0 && r2.y == 0 && r2.w == 40 && r2.h == 1;
+    let fourth: bool = r3.x == 0 && r3.y == 1 && r3.w == 40 && r3.h == 1;
+    return from_assertion(equals_bool(true, good && third && fourth, 8501));
+}
+
+// screen1 > row2 > b3, b4, b5 at width 40: 13/13/14 split.
+fn rowharness() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, row(2, 1, nm()));
+    let t3: Table = push_ok(t2, button(3, 2, nm(), 1));
+    let t4: Table = push_ok(t3, button(4, 2, nm(), 1));
+    return push_ok(t4, button(5, 2, nm(), 1));
+}
+
+test row_splits_with_remainder_last() -> (result: TestResult) {
+    let l: Layout = layout_of(rowharness(), 40);
+    let a: Rect = l.rects[2];
+    let b: Rect = l.rects[3];
+    let c: Rect = l.rects[4];
+    let good: bool = a.x == 0 && a.w == 13 && b.x == 13 && b.w == 13;
+    let last: bool = c.x == 26 && c.w == 14;
+    let ys: bool = a.y == 0 && b.y == 0 && c.y == 0;
+    return from_assertion(equals_bool(true, good && last && ys, 8502));
+}
+
+test resize_is_pure_redistribution() -> (result: TestResult) {
+    let t: Table = rowharness();
+    let narrow: Layout = layout_of(t, 20);
+    let a: Rect = narrow.rects[2];
+    let c: Rect = narrow.rects[4];
+    let wide: Layout = layout_of(t, 41);
+    let w: Rect = wide.rects[4];
+    return from_assertion(equals_bool(true, a.w == 6 && c.w == 8 && w.w == 15, 8503));
+}
+
+test zero_width_refused() -> (result: TestResult) {
+    let bad: bool = match layout_table(stack(), 0) {
+        LayoutOut.Value { l } => false,
+        LayoutOut.BadWidth => true,
+    };
+    return from_assertion(equals_bool(true, bad, 8504));
+}

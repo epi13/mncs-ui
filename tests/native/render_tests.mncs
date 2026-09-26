@@ -1,0 +1,109 @@
+mncs 0.18;
+
+// Native contracts for the renderer-neutral projection: slot
+// content, focus marks, semantic lookup by role and name, style
+// storage (projection takes no style input by construction), and
+// layout rect carriage.
+
+module mncs.ui.test.render.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.focus;
+use mncs.ui.layout;
+use mncs.ui.render;
+use mncs.ui.style;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn go_label() -> (result: Label) {
+    return label_from_8(103, 111, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+fn rtable() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, list_view(2, 1, nm()));
+    let t3: Table = push_ok(t2, item(10, 2, go_label(), Status.Fail, 1));
+    return push_ok(t3, button(3, 1, go_label(), 2));
+}
+
+fn rlayout(t: Table) -> (result: Layout) {
+    return match layout_table(t, 40) {
+        LayoutOut.Value { l } => l,
+        LayoutOut.BadWidth => empty_layout(),
+    };
+}
+
+test projection_carries_semantics() -> (result: TestResult) {
+    let t: Table = rtable();
+    let p: Projection = project_table(t, rlayout(t), focus_on(10));
+    let s0: Slot = p.slots[0];
+    let s2: Slot = p.slots[2];
+    let root: bool = s0.id == 1 && role_eq(s0.role, Role.Window);
+    let item: bool = s2.id == 10 && role_eq(s2.role, Role.ListItem) && s2.focused && status_eq(s2.status, Status.Fail);
+    let geo: bool = s2.x == 0 && s2.w == 40 && s2.h == 1;
+    return from_assertion(equals_bool(true, p.count == 4 && root && item && geo, 8601));
+}
+
+test unfocused_marks_absent() -> (result: TestResult) {
+    let t: Table = rtable();
+    let p: Projection = project_table(t, rlayout(t), focus_empty());
+    let s2: Slot = p.slots[2];
+    return from_assertion(equals_bool(true, s2.focused == false, 8602));
+}
+
+test lookup_by_role_and_name() -> (result: TestResult) {
+    let t: Table = rtable();
+    let p: Projection = project_table(t, rlayout(t), focus_empty());
+    let btn: bool = match find_by_role(p, Role.Button) {
+        LookupOut.Value { s } => s.id == 3,
+        LookupOut.Missing => false,
+    };
+    let named: bool = match find_by_name(p, go_label()) {
+        LookupOut.Value { s } => s.id == 10,
+        LookupOut.Missing => false,
+    };
+    let zz: Label = label_from_8(122, 122, 0, 0, 0, 0, 0, 0, 2);
+    let missing: bool = match find_by_name(p, zz) {
+        LookupOut.Value { s } => false,
+        LookupOut.Missing => true,
+    };
+    return from_assertion(equals_bool(true, btn && named && missing, 8603));
+}
+
+test style_storage_bounded() -> (result: TestResult) {
+    let s0: StyleSheet = empty_sheet();
+    let s1: StyleSheet = match style_set(s0, 10, Emphasis.Strong) {
+        StyleOut.Value { s } => s,
+        StyleOut.Full => s0,
+    };
+    let got: bool = match style_get(s1, 10) {
+        EmphasisOut.Value { e } => match e {
+            Emphasis.Strong => true,
+            Emphasis.Normal => false,
+            Emphasis.Muted => false,
+        },
+        EmphasisOut.Missing => false,
+    };
+    let missing: bool = match style_get(s1, 11) {
+        EmphasisOut.Value { e } => false,
+        EmphasisOut.Missing => true,
+    };
+    return from_assertion(equals_bool(true, got && missing && s1.count == 1, 8604));
+}

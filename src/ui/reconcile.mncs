@@ -1,0 +1,186 @@
+mncs 0.18;
+
+// mncs.ui.reconcile.v1 — bounded old/new reconciliation.
+//
+// Reconciliation keys on stable u64 identity, never on position or
+// rendered strings: inserts (in new, not old), removes (in old, not
+// new), and updates (same id, changed semantic fields). Ordering is
+// table order on both sides; moves are not separately reported —
+// identity preservation across reorder is covered by the absence of
+// spurious remove/insert pairs, pinned in the suite.
+//
+// Focus reconciliation is explicit: the focus verdict says whether
+// the focused row survived (Kept), where it moved (Moved), or that
+// it is gone (Lost). No O(N^2) behavior: two linear scans.
+
+module mncs.ui.reconcile.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.focus;
+
+enum DiffTag { Insert, Remove, Update }
+
+record DiffOp { tag: DiffTag, id: u64 }
+
+record Diff { ops: [DiffOp; 64], count: u64 }
+
+fn empty_diff_op() -> (result: DiffOp) {
+    return DiffOp { tag: DiffTag.Insert, id: 0 };
+}
+
+fn empty_diff_ops() -> (result: [DiffOp; 64]) {
+    return [
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op(),
+        empty_diff_op(), empty_diff_op(), empty_diff_op(), empty_diff_op()
+    ];
+}
+
+fn empty_diff() -> (result: Diff) {
+    return Diff { ops: empty_diff_ops(), count: 0 };
+}
+
+fn diff_push(d: Diff, tag: DiffTag, id: u64) -> (result: Diff) {
+    if d.count >= 64 {
+        return d;
+    }
+    return Diff {
+        ops: replace(d.ops, d.count, DiffOp { tag: tag, id: id }),
+        count: d.count + 1
+    };
+}
+
+// Same semantic content: identity excluded (it is the key),
+// structure (parent/depth/kids/h) excluded (derived at push).
+fn nodes_same(a: Node, b: Node) -> (result: bool) {
+    if label_eq(a.name, b.name) == false {
+        return false;
+    }
+    if label_eq(a.text, b.text) == false {
+        return false;
+    }
+    if a.intent != b.intent {
+        return false;
+    }
+    if a.enabled != b.enabled {
+        return false;
+    }
+    if status_eq_node(a.status, b.status) == false {
+        return false;
+    }
+    return true;
+}
+
+fn status_eq_node(a: Status, b: Status) -> (result: bool) {
+    if status_code_of(a) == status_code_of(b) {
+        return true;
+    }
+    return false;
+}
+
+fn status_code_of(s: Status) -> (result: u64) {
+    return match s {
+        Status.Pass => 1,
+        Status.Fail => 2,
+        Status.Unknown => 3,
+        Status.Loading => 4,
+        Status.Blank => 0,
+    };
+}
+
+fn diff_tables(old: Table, new: Table) -> (result: Diff) {
+    let ins: Diff = diff_inserts(old, new);
+    return diff_removes(ins, old, new);
+}
+
+fn diff_inserts(old: Table, new: Table) -> (result: Diff) {
+    iterate i over new.nodes carrying d: Diff = empty_diff() {
+        next d = diff_insert_cell(d, old, new, i);
+    }
+    return d;
+}
+
+fn diff_insert_cell(d: Diff, old: Table, new: Table, i: u64) -> (result: Diff) {
+    if i >= new.count {
+        return d;
+    }
+    return match table_get(old, new.nodes[i].id) {
+        FindOut.Value { n, idx } => diff_maybe_update(d, n, new.nodes[i]),
+        FindOut.Missing => diff_push(d, DiffTag.Insert, new.nodes[i].id),
+    };
+}
+
+fn diff_maybe_update(d: Diff, o: Node, n: Node) -> (result: Diff) {
+    if nodes_same(o, n) {
+        return d;
+    }
+    return diff_push(d, DiffTag.Update, n.id);
+}
+
+fn diff_removes(d: Diff, old: Table, new: Table) -> (result: Diff) {
+    iterate i over old.nodes carrying acc: Diff = d {
+        next acc = diff_remove_cell(acc, old, new, i);
+    }
+    return acc;
+}
+
+fn diff_remove_cell(acc: Diff, old: Table, new: Table, i: u64) -> (result: Diff) {
+    if i >= old.count {
+        return acc;
+    }
+    return match table_get(new, old.nodes[i].id) {
+        FindOut.Value { n, idx } => acc,
+        FindOut.Missing => diff_push(acc, DiffTag.Remove, old.nodes[i].id),
+    };
+}
+
+fn diff_has(d: Diff, tag: DiffTag, id: u64) -> (result: bool) {
+    iterate i over d.ops carrying found: bool = false {
+        next found = diff_has_cell(found, d, tag, id, i);
+    }
+    return found;
+}
+
+fn diff_has_cell(found: bool, d: Diff, tag: DiffTag, id: u64, i: u64) -> (result: bool) {
+    if i >= d.count {
+        return found;
+    }
+    if tag_eq(d.ops[i].tag, tag) && d.ops[i].id == id {
+        return true;
+    }
+    return found;
+}
+
+fn tag_eq(a: DiffTag, b: DiffTag) -> (result: bool) {
+    return match a {
+        DiffTag.Insert => match b {
+            DiffTag.Insert => true,
+            DiffTag.Remove => false,
+            DiffTag.Update => false,
+        },
+        DiffTag.Remove => match b {
+            DiffTag.Insert => false,
+            DiffTag.Remove => true,
+            DiffTag.Update => false,
+        },
+        DiffTag.Update => match b {
+            DiffTag.Insert => false,
+            DiffTag.Remove => false,
+            DiffTag.Update => true,
+        },
+    };
+}

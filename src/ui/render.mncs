@@ -1,0 +1,202 @@
+mncs 0.18;
+
+// mncs.ui.render.v1 — the renderer-neutral semantic projection.
+//
+// The projection is what crosses the renderer boundary: one `Slot`
+// per live node in table order — identity, depth, role, names,
+// status, enabled state, focus mark, and cell rect. Renderers (head
+// less, HTML, a future TUI adapter) consume slots; they never see
+// push mechanics, intent registries, or effect handles, because
+// there are none. Two renderers receiving the same table observe
+// the same slots: that equivalence IS the conformance contract.
+//
+// The same projection serves agents and headless tests: find the
+// first control with a role, find a control by name bytes, read a
+// status — no coordinates, no pixels, no scraping.
+
+module mncs.ui.render.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.focus;
+use mncs.ui.layout;
+
+record Slot {
+    id: u64,
+    depth: u64,
+    role: Role,
+    name: Label,
+    text: Label,
+    status: Status,
+    enabled: bool,
+    focused: bool,
+    x: u64,
+    y: u64,
+    w: u64,
+    h: u64
+}
+
+record Projection { slots: [Slot; 64], count: u64 }
+
+fn empty_slot() -> (result: Slot) {
+    return Slot {
+        id: 0,
+        depth: 0,
+        role: Role.None,
+        name: label_empty(),
+        text: label_empty(),
+        status: Status.Blank,
+        enabled: false,
+        focused: false,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0
+    };
+}
+
+fn empty_slots() -> (result: [Slot; 64]) {
+    return [
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot(),
+        empty_slot(), empty_slot(), empty_slot(), empty_slot()
+    ];
+}
+
+fn empty_projection() -> (result: Projection) {
+    return Projection { slots: empty_slots(), count: 0 };
+}
+
+// Project a table with its layout and focus state. Slots with
+// `focused` set are exactly the focus owner's current row.
+fn project_table(t: Table, l: Layout, f: Focus) -> (result: Projection) {
+    iterate i over t.nodes carrying p: Projection = empty_projection() {
+        next p = project_table_cell(p, t, l, f, i);
+    }
+    return p;
+}
+
+fn project_table_cell(p: Projection, t: Table, l: Layout, f: Focus, i: u64) -> (result: Projection) {
+    if i >= t.count {
+        return p;
+    }
+    let n: Node = t.nodes[i];
+    let r: Rect = l.rects[i];
+    let s: Slot = Slot {
+        id: n.id,
+        depth: n.depth,
+        role: n.role,
+        name: n.name,
+        text: n.text,
+        status: n.status,
+        enabled: n.enabled,
+        focused: f.valid && f.current == n.id,
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h
+    };
+    return Projection {
+        slots: replace(p.slots, p.count, s),
+        count: p.count + 1
+    };
+}
+
+// Outcome of a semantic lookup.
+enum LookupOut { Value { s: Slot }, Missing }
+
+// First slot carrying a role, in table order.
+fn find_by_role(p: Projection, role: Role) -> (result: LookupOut) {
+    iterate i over p.slots carrying out: LookupOut = LookupOut.Missing {
+        next out = find_role_cell(out, p, role, i);
+    }
+    return out;
+}
+
+fn find_role_cell(out: LookupOut, p: Projection, role: Role, i: u64) -> (result: LookupOut) {
+    return match out {
+        LookupOut.Value { s } => out,
+        LookupOut.Missing => find_role_live(p, role, i),
+    };
+}
+
+fn find_role_live(p: Projection, role: Role, i: u64) -> (result: LookupOut) {
+    if i >= p.count {
+        return LookupOut.Missing;
+    }
+    if role_eq(p.slots[i].role, role) {
+        return LookupOut.Value { s: p.slots[i] };
+    }
+    return LookupOut.Missing;
+}
+
+fn role_code(r: Role) -> (result: u64) {
+    return match r {
+        Role.Window => 1,
+        Role.Group => 2,
+        Role.Heading => 3,
+        Role.Text => 4,
+        Role.Button => 5,
+        Role.TextField => 6,
+        Role.List => 7,
+        Role.ListItem => 8,
+        Role.Status => 9,
+        Role.None => 0,
+    };
+}
+
+fn role_eq(a: Role, b: Role) -> (result: bool) {
+    return role_code(a) == role_code(b);
+}
+
+fn status_code(s: Status) -> (result: u64) {
+    return match s {
+        Status.Pass => 1,
+        Status.Fail => 2,
+        Status.Unknown => 3,
+        Status.Loading => 4,
+        Status.Blank => 0,
+    };
+}
+
+fn status_eq(a: Status, b: Status) -> (result: bool) {
+    return status_code(a) == status_code(b);
+}
+
+// First slot whose accessible name matches, in table order.
+fn find_by_name(p: Projection, name: Label) -> (result: LookupOut) {
+    iterate i over p.slots carrying out: LookupOut = LookupOut.Missing {
+        next out = find_name_cell(out, p, name, i);
+    }
+    return out;
+}
+
+fn find_name_cell(out: LookupOut, p: Projection, name: Label, i: u64) -> (result: LookupOut) {
+    return match out {
+        LookupOut.Value { s } => out,
+        LookupOut.Missing => find_name_live(p, name, i),
+    };
+}
+
+fn find_name_live(p: Projection, name: Label, i: u64) -> (result: LookupOut) {
+    if i >= p.count {
+        return LookupOut.Missing;
+    }
+    if label_eq(p.slots[i].name, name) {
+        return LookupOut.Value { s: p.slots[i] };
+    }
+    return LookupOut.Missing;
+}

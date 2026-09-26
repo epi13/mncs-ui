@@ -1,0 +1,197 @@
+mncs 0.18;
+
+// mncs.ui.app.v1 — status-board fixture: canonical state to table.
+//
+// This module is a FIXTURE, not owned domain logic: a check-status
+// board shaped like mncs-test results (id, name, PASS/FAIL/UNKNOWN)
+// proving application-state projection. The Board is canonical
+// state; `build_board` projects it to a fresh table every time
+// (derived rows are recomputed, never cached); intents update the
+// Board; the driver rebuilds. Selection lives in the Board, focus
+// lives in UI focus state, field text lives in the table until an
+// Edit commits it — three state kinds, three owners.
+//
+// Fixture operation ids: SELECT = 1, RERUN = 2, FILTER = 3. Rerun
+// resolves deterministically (even item id -> Pass, odd -> Fail):
+// a scripted "operation result", standing in for Control/Test.
+
+module mncs.ui.app.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.event;
+
+record Check { id: u64, name: Label, status: Status }
+
+record Board {
+    checks: [Check; 8],
+    n: u64,
+    selected: u64,
+    filter: Label
+}
+
+fn empty_check() -> (result: Check) {
+    return Check { id: 0, name: label_empty(), status: Status.Blank };
+}
+
+fn empty_checks() -> (result: [Check; 8]) {
+    return [
+        empty_check(), empty_check(), empty_check(), empty_check(),
+        empty_check(), empty_check(), empty_check(), empty_check()
+    ];
+}
+
+fn board_empty() -> (result: Board) {
+    return Board { checks: empty_checks(), n: 0, selected: 0, filter: label_empty() };
+}
+
+enum BoardAddOut { Value { b: Board }, Full }
+
+fn board_add(b: Board, id: u64, name: Label, status: Status) -> (result: BoardAddOut) {
+    if b.n >= 8 {
+        return BoardAddOut.Full;
+    }
+    return BoardAddOut.Value {
+        b: Board {
+            checks: replace(b.checks, b.n, Check { id: id, name: name, status: status }),
+            n: b.n + 1,
+            selected: b.selected,
+            filter: b.filter
+        }
+    };
+}
+
+fn board_select(b: Board, id: u64) -> (result: Board) {
+    return Board { checks: b.checks, n: b.n, selected: id, filter: b.filter };
+}
+
+fn board_filter(b: Board, f: Label) -> (result: Board) {
+    return Board { checks: b.checks, n: b.n, selected: b.selected, filter: f };
+}
+
+// Deterministic fixture verdict: even -> Pass, odd -> Fail.
+fn fixture_verdict(id: u64) -> (result: Status) {
+    if id % 2 == 0 {
+        return Status.Pass;
+    }
+    return Status.Fail;
+}
+
+fn board_rerun(b: Board, id: u64) -> (result: Board) {
+    iterate i over b.checks carrying out: [Check; 8] = b.checks {
+        next out = board_rerun_cell(out, id, i);
+    }
+    return Board { checks: out, n: b.n, selected: b.selected, filter: b.filter };
+}
+
+fn board_rerun_cell(out: [Check; 8], id: u64, i: u64) -> (result: [Check; 8]) {
+    if i >= 8 {
+        return out;
+    }
+    if out[i].id != id {
+        return out;
+    }
+    return replace(out, i, Check { id: id, name: out[i].name, status: fixture_verdict(id) });
+}
+
+enum ApplyOut { Value { b: Board }, UnknownOp, UnknownItem }
+
+fn apply_intent(b: Board, intent: Intent) -> (result: ApplyOut) {
+    if intent.op == 1 {
+        return apply_select(b, intent.arg);
+    }
+    if intent.op == 2 {
+        return apply_rerun(b, intent.arg, b.selected);
+    }
+    if intent.op == 3 {
+        return ApplyOut.Value { b: b };
+    }
+    return ApplyOut.UnknownOp;
+}
+
+fn apply_select(b: Board, id: u64) -> (result: ApplyOut) {
+    if board_has(b, id) {
+        return ApplyOut.Value { b: board_select(b, id) };
+    }
+    return ApplyOut.UnknownItem;
+}
+
+fn apply_rerun(b: Board, btn: u64, selected: u64) -> (result: ApplyOut) {
+    if board_has(b, selected) {
+        return ApplyOut.Value { b: board_rerun(b, selected) };
+    }
+    return ApplyOut.UnknownItem;
+}
+
+fn board_has(b: Board, id: u64) -> (result: bool) {
+    iterate i over b.checks carrying found: bool = false {
+        next found = board_has_cell(found, b, id, i);
+    }
+    return found;
+}
+
+fn board_has_cell(found: bool, b: Board, id: u64, i: u64) -> (result: bool) {
+    if i >= b.n {
+        return found;
+    }
+    let all: [Check; 8] = b.checks;
+    return found || all[i].id == id;
+}
+
+// --- projection: canonical board state to a fresh table ---
+
+record Ctx { t: Table, err: u64 }
+
+enum BoardOut { Value { t: Table }, PushFailed { code: u64 } }
+
+fn ctx_push(c: Ctx, n: Node) -> (result: Ctx) {
+    if c.err != 0 {
+        return c;
+    }
+    return match table_push(c.t, n) {
+        PushOut.Value { t } => Ctx { t: t, err: 0 },
+        PushOut.Full => Ctx { t: c.t, err: 1 },
+        PushOut.DupId => Ctx { t: c.t, err: 2 },
+        PushOut.BadParent => Ctx { t: c.t, err: 3 },
+        PushOut.BadDepth => Ctx { t: c.t, err: 4 },
+    };
+}
+
+fn build_board(b: Board, title: Label, rerun: Label, filter_name: Label) -> (result: BoardOut) {
+    // Structural containers share no names: screen and heading carry
+    // the title (different parents), list and footer row stay
+    // unnamed so sibling names stay unique for assistive lookup.
+    let blank: Label = label_empty();
+    let c0: Ctx = Ctx { t: table_empty(), err: 0 };
+    let c1: Ctx = ctx_push(c0, screen(1, title));
+    let c2: Ctx = ctx_push(c1, heading(2, 1, title));
+    let c3: Ctx = ctx_push(c2, list_view(3, 1, blank));
+    let c4: Ctx = build_items(c3, b);
+    let c5: Ctx = ctx_push(c4, row(4, 1, blank));
+    let c6: Ctx = ctx_push(c5, button(5, 4, rerun, 2));
+    let c7: Ctx = ctx_push(c6, input(6, 4, filter_name, b.filter, 3));
+    if c7.err != 0 {
+        return BoardOut.PushFailed { code: c7.err };
+    }
+    return BoardOut.Value { t: c7.t };
+}
+
+fn build_items(c: Ctx, b: Board) -> (result: Ctx) {
+    iterate i over b.checks carrying acc: Ctx = c {
+        next acc = build_item_cell(acc, b, i);
+    }
+    return acc;
+}
+
+fn build_item_cell(acc: Ctx, b: Board, i: u64) -> (result: Ctx) {
+    if i >= b.n {
+        return acc;
+    }
+    if label_starts_with(b.checks[i].name, b.filter) == false {
+        return acc;
+    }
+    // Item node ids are check ids: fixture ids start at 10, clear of
+    // the fixed chrome ids 1..6, so intents route straight back.
+    return ctx_push(acc, item(b.checks[i].id, 3, b.checks[i].name, b.checks[i].status, 1));
+}

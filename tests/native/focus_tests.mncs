@@ -1,0 +1,124 @@
+mncs 0.18;
+
+// Native contracts for focus ownership: requests, order traversal
+// with wrap, reverse traversal, and structural resolution after the
+// focused row disappears.
+
+module mncs.ui.test.focus.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.focus;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+// screen1 > col2 > button3, text4, input5, disabled-button6.
+// Focusables in order: 3, 5.
+fn ftable() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, column(2, 1, nm()));
+    let t3: Table = push_ok(t2, button(3, 2, nm(), 1));
+    let t4: Table = push_ok(t3, text_line(4, 2, nm()));
+    let t5: Table = push_ok(t4, input(5, 2, nm(), nm(), 3));
+    return push_ok(t5, disabled(button(6, 2, nm(), 1)));
+}
+
+test request_routing() -> (result: TestResult) {
+    let t: Table = ftable();
+    let f: Focus = focus_empty();
+    let ok: bool = match focus_request(t, f, 3) {
+        FocusReqOut.Value { f: nf } => nf.valid && nf.current == 3,
+        FocusReqOut.UnknownTarget => false,
+        FocusReqOut.NotFocusable => false,
+    };
+    let unk: bool = match focus_request(t, f, 99) {
+        FocusReqOut.Value { f: nf } => false,
+        FocusReqOut.UnknownTarget => true,
+        FocusReqOut.NotFocusable => false,
+    };
+    let txt: bool = match focus_request(t, f, 4) {
+        FocusReqOut.Value { f: nf } => false,
+        FocusReqOut.UnknownTarget => false,
+        FocusReqOut.NotFocusable => true,
+    };
+    let dis: bool = match focus_request(t, f, 6) {
+        FocusReqOut.Value { f: nf } => false,
+        FocusReqOut.UnknownTarget => false,
+        FocusReqOut.NotFocusable => true,
+    };
+    return from_assertion(equals_bool(true, ok && unk && txt && dis, 8301));
+}
+
+test traversal_wraps() -> (result: TestResult) {
+    let t: Table = ftable();
+    let first: bool = match focus_first(t) {
+        FocusScanOut.Value { f } => f.current == 3,
+        FocusScanOut.None => false,
+    };
+    let nxt: bool = match focus_next(t, focus_on(3)) {
+        FocusScanOut.Value { f } => f.current == 5,
+        FocusScanOut.None => false,
+    };
+    let wrap: bool = match focus_next(t, focus_on(5)) {
+        FocusScanOut.Value { f } => f.current == 3,
+        FocusScanOut.None => false,
+    };
+    return from_assertion(equals_bool(true, first && nxt && wrap, 8302));
+}
+
+test reverse_traversal() -> (result: TestResult) {
+    let t: Table = ftable();
+    let prev: bool = match focus_prev(t, focus_on(5)) {
+        FocusScanOut.Value { f } => f.current == 3,
+        FocusScanOut.None => false,
+    };
+    let wrap: bool = match focus_prev(t, focus_on(3)) {
+        FocusScanOut.Value { f } => f.current == 5,
+        FocusScanOut.None => false,
+    };
+    let from_empty: bool = match focus_prev(t, focus_empty()) {
+        FocusScanOut.Value { f } => f.current == 5,
+        FocusScanOut.None => false,
+    };
+    return from_assertion(equals_bool(true, prev && wrap && from_empty, 8303));
+}
+
+test removal_resolution() -> (result: TestResult) {
+    // Table without node 3: focus moves to 5; empty focus stays empty.
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, column(2, 1, nm()));
+    let small: Table = push_ok(t2, input(5, 2, nm(), nm(), 3));
+    let moved: bool = match focus_after_remove(small, focus_on(3)) {
+        FocusKept.Kept => false,
+        FocusKept.Moved { f } => f.current == 5,
+        FocusKept.Empty => false,
+    };
+    let kept: bool = match focus_after_remove(small, focus_on(5)) {
+        FocusKept.Kept => true,
+        FocusKept.Moved { f } => false,
+        FocusKept.Empty => false,
+    };
+    let empty: bool = match focus_after_remove(small, focus_empty()) {
+        FocusKept.Kept => false,
+        FocusKept.Moved { f } => false,
+        FocusKept.Empty => true,
+    };
+    return from_assertion(equals_bool(true, moved && kept && empty, 8304));
+}

@@ -1,0 +1,134 @@
+mncs 0.18;
+
+// mncs.ui.text.v1 — bounded UI text as explicit bytes.
+//
+// MNCS has no string type, so user-visible text is a fixed 32-byte
+// buffer with a byte length: `Label { bytes, len }`. Bytes past
+// `len` are always zero. There is deliberately no grapheme,
+// shaping, or encoding machinery here: multi-byte UTF-8 sequences
+// are opaque payload (length counts BYTES), backends own shaping,
+// and the suite pins byte preservation plus an opaque UTF-8
+// round trip. Anything longer than 32 bytes is `Truncated` data at
+// the push site, never silent loss (pressure P-UI-TEXT).
+//
+// Tests spell content as byte literals cross-checked by the oracle
+// against real strings (e.g. "rerun" == [114, 101, 114, 117, 110]).
+
+module mncs.ui.text.v1;
+
+// UI text: 32 content bytes plus the live byte length (0..32).
+record Label { bytes: [byte; 32], len: u64 }
+
+fn label_empty() -> (result: Label) {
+    return Label { bytes: [0; 32], len: 0 };
+}
+
+fn label_len(l: Label) -> (result: u64) {
+    return l.len;
+}
+
+fn label_byte(l: Label, i: u64) -> (result: byte) {
+    return l.bytes[i];
+}
+
+// Short labels spelled as up to 8 bytes plus a length. Longer
+// fixture strings compose with `label_cat`.
+fn label_from_8(b0: byte, b1: byte, b2: byte, b3: byte, b4: byte, b5: byte, b6: byte, b7: byte, len: u64) -> (result: Label) {
+    return Label {
+        bytes: [
+            b0, b1, b2, b3, b4, b5, b6, b7,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0
+        ],
+        len: len
+    };
+}
+
+// Outcome of growing a label.
+enum LabelOut { Value { l: Label }, Full }
+
+// Append one byte; a full label refuses structurally.
+fn label_push(l: Label, b: byte) -> (result: LabelOut) {
+    if l.len >= 32 {
+        return LabelOut.Full;
+    }
+    return LabelOut.Value { l: Label { bytes: replace(l.bytes, l.len, b), len: l.len + 1 } };
+}
+
+// Drop the last byte; empty stays empty (no underflow trap).
+fn label_drop_last(l: Label) -> (result: Label) {
+    if l.len == 0 {
+        return l;
+    }
+    return Label { bytes: replace(l.bytes, l.len - 1, 0), len: l.len - 1 };
+}
+
+// Concatenate with truncation refusal: the result carries the full
+// 32 bytes only when both inputs fit.
+enum CatOut { Value { l: Label }, Truncated }
+
+fn label_cat(a: Label, b: Label) -> (result: CatOut) {
+    if a.len + b.len > 32 {
+        return CatOut.Truncated;
+    }
+    return CatOut.Value { l: label_cat_cells(a, b) };
+}
+
+fn label_cat_cells(a: Label, b: Label) -> (result: Label) {
+    iterate i over a.bytes carrying out: [byte; 32] = a.bytes {
+        next out = label_cat_cell(out, a, b, i);
+    }
+    return Label { bytes: out, len: a.len + b.len };
+}
+
+fn label_cat_cell(out: [byte; 32], a: Label, b: Label, i: u64) -> (result: [byte; 32]) {
+    if i < b.len {
+        return replace(out, a.len + i, b.bytes[i]);
+    }
+    return out;
+}
+
+// Byte-exact equality over the live prefix; padding never compares.
+fn label_eq(a: Label, b: Label) -> (result: bool) {
+    if a.len != b.len {
+        return false;
+    }
+    return label_eq_cells(a, b);
+}
+
+fn label_eq_cells(a: Label, b: Label) -> (result: bool) {
+    iterate i over a.bytes carrying same: bool = true {
+        next same = label_eq_cell(same, a, b, i);
+    }
+    return same;
+}
+
+fn label_eq_cell(same: bool, a: Label, b: Label, i: u64) -> (result: bool) {
+    if i < a.len {
+        return same && a.bytes[i] == b.bytes[i];
+    }
+    return same;
+}
+
+// True when `l` starts with the bytes of `prefix`.
+fn label_starts_with(l: Label, prefix: Label) -> (result: bool) {
+    if prefix.len > l.len {
+        return false;
+    }
+    return label_prefix_cells(l, prefix);
+}
+
+fn label_prefix_cells(l: Label, prefix: Label) -> (result: bool) {
+    iterate i over l.bytes carrying same: bool = true {
+        next same = label_prefix_cell(same, l, prefix, i);
+    }
+    return same;
+}
+
+fn label_prefix_cell(same: bool, l: Label, prefix: Label, i: u64) -> (result: bool) {
+    if i < prefix.len {
+        return same && l.bytes[i] == prefix.bytes[i];
+    }
+    return same;
+}

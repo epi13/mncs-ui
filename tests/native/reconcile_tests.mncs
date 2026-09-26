@@ -1,0 +1,80 @@
+mncs 0.18;
+
+// Native contracts for reconciliation: empty diffs on identical
+// tables, insert/remove/update detection, reorder without spurious
+// operations, and diff membership queries.
+
+module mncs.ui.test.reconcile.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.reconcile;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn other() -> (result: Label) {
+    return label_from_8(111, 116, 104, 101, 114, 0, 0, 0, 5);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+fn base() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    return push_ok(t1, button(3, 1, nm(), 1));
+}
+
+test identical_tables_no_ops() -> (result: TestResult) {
+    let d: Diff = diff_tables(base(), base());
+    return from_assertion(equals_bool(true, d.count == 0, 8701));
+}
+
+test insert_remove_update() -> (result: TestResult) {
+    let old: Table = base();
+    // New: same root, button renamed + intent changed, text added,
+    // and nothing removed yet.
+    let n0: Table = table_empty();
+    let n1: Table = push_ok(n0, screen(1, nm()));
+    let n2: Table = push_ok(n1, button(3, 1, other(), 2));
+    let new: Table = push_ok(n2, text_line(4, 1, nm()));
+    let d: Diff = diff_tables(old, new);
+    let ins: bool = diff_has(d, DiffTag.Insert, 4);
+    let upd: bool = diff_has(d, DiffTag.Update, 3);
+    let noins: bool = diff_has(d, DiffTag.Insert, 3) == false;
+    return from_assertion(equals_bool(true, d.count == 2 && ins && upd && noins, 8702));
+}
+
+test reorder_preserves_identity() -> (result: TestResult) {
+    // Same ids, different push order: no remove/insert pairs, no
+    // updates — identity is the id, never the position.
+    let a0: Table = table_empty();
+    let a1: Table = push_ok(a0, screen(1, nm()));
+    let a2: Table = push_ok(a1, button(3, 1, nm(), 1));
+    let a3: Table = push_ok(a2, button(4, 1, nm(), 1));
+    let b0: Table = table_empty();
+    let b1: Table = push_ok(b0, screen(1, nm()));
+    let b2: Table = push_ok(b1, button(4, 1, nm(), 1));
+    let b3: Table = push_ok(b2, button(3, 1, nm(), 1));
+    let d: Diff = diff_tables(a3, b3);
+    return from_assertion(equals_bool(true, d.count == 0, 8704));
+}
+
+test removal_detected() -> (result: TestResult) {
+    let old: Table = push_ok(base(), text_line(4, 1, nm()));
+    let d: Diff = diff_tables(old, base());
+    let rem: bool = diff_has(d, DiffTag.Remove, 4);
+    return from_assertion(equals_bool(true, d.count == 1 && rem, 8703));
+}

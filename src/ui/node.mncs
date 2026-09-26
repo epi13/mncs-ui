@@ -1,0 +1,347 @@
+mncs 0.18;
+
+// mncs.ui.node.v1 — the semantic node arena.
+//
+// The UI is a FLAT table of nodes, not a recursive value tree. This
+// is the shape current MNCS admits: recursive enum VALUES elaborate,
+// but any computation recursing through them is rejected (MNE130),
+// and Nat-generic nominal types cannot be named, so a
+// `Vec<Node>`-style tree with dynamic children is inexpressible.
+// The arena answers with what the language does well — records,
+// u64 identity, fixed tables, and bounded `iterate` scans:
+//
+//   Table { nodes: [Node; 64], count }
+//   Node  { id, parent, pidx, kind, role, name, text,
+//           intent, enabled, status, depth, kids, h }
+//
+// Identity is stable u64 state, never array position: insertion
+// order is pre-order (parents push before children — enforced by
+// the parent-exists rule), children of a node are the rows with
+// `parent == id` in table order, and reconciliation keys on `id`.
+// Depth is capped at 8 (`BadDepth`); tables hold 64 nodes
+// (`Full`); duplicate ids are refused (`DupId`); children of a
+// missing parent are refused (`BadParent`). All outcomes are data.
+//
+// Layout inputs are maintained at push time: `depth`, the parent
+// table index `pidx` (64 = none), the direct-child count `kids`,
+// and the subtree display height `h` (leaves 1, containers summed
+// upward through ancestors). No recursive walk is ever needed.
+
+module mncs.ui.node.v1;
+
+use mncs.ui.text;
+
+// Widget kinds. Containers (Screen/Row/Column/List) group children;
+// leaves (Text/Button/Input/Item/Status) display on one row each.
+// Item is a selectable status row: leaf for layout, focusable for
+// selection.
+enum Kind { Screen, Row, Column, List, Item, Text, Button, Input, Status }
+
+// Accessibility roles carried by every node. Visual layout and
+// semantic role are different concepts: a Row is a Group, never a
+// generic box with a comment.
+enum Role { Window, Group, Heading, Text, Button, TextField, List, ListItem, Status, None }
+
+// Canonical domain statuses. PASS/FAIL/UNKNOWN stay distinct
+// through projection; Loading marks in-flight work; Blank is the
+// absence of status, never a collapsed error.
+enum Status { Pass, Fail, Unknown, Loading, Blank }
+
+record Node {
+    id: u64,
+    parent: u64,
+    pidx: u64,
+    kind: Kind,
+    role: Role,
+    name: Label,
+    text: Label,
+    intent: u64,
+    enabled: bool,
+    status: Status,
+    depth: u64,
+    kids: u64,
+    h: u64,
+    sx: u64,
+    sy: u64
+}
+
+record Table { nodes: [Node; 64], count: u64 }
+
+// The empty node: all scalars zero/false, Blank status, No role.
+// Tables seed from this; only rows below `count` are live.
+fn empty_node() -> (result: Node) {
+    return Node {
+        id: 0,
+        parent: 0,
+        pidx: 64,
+        kind: Kind.Text,
+        role: Role.None,
+        name: label_empty(),
+        text: label_empty(),
+        intent: 0,
+        enabled: false,
+        status: Status.Blank,
+        depth: 0,
+        kids: 0,
+        h: 0,
+        sx: 0,
+        sy: 0
+    };
+}
+
+fn table_empty() -> (result: Table) {
+    return Table { nodes: empty_table_nodes(), count: 0 };
+}
+
+fn empty_table_nodes() -> (result: [Node; 64]) {
+    return [
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node(),
+        empty_node(), empty_node(), empty_node(), empty_node()
+    ];
+}
+
+// Leaf display height: containers accumulate from children.
+fn kind_height(k: Kind) -> (result: u64) {
+    return match k {
+        Kind.Screen => 0,
+        Kind.Row => 0,
+        Kind.Column => 0,
+        Kind.List => 0,
+        Kind.Item => 1,
+        Kind.Text => 1,
+        Kind.Button => 1,
+        Kind.Input => 1,
+        Kind.Status => 1,
+    };
+}
+
+// Focusable kinds: controls and selectable items.
+fn kind_focusable(k: Kind) -> (result: bool) {
+    return match k {
+        Kind.Screen => false,
+        Kind.Row => false,
+        Kind.Column => false,
+        Kind.List => false,
+        Kind.Item => true,
+        Kind.Text => false,
+        Kind.Button => true,
+        Kind.Input => true,
+        Kind.Status => false,
+    };
+}
+
+fn node_focusable(n: Node) -> (result: bool) {
+    if n.enabled == false {
+        return false;
+    }
+    return kind_focusable(n.kind);
+}
+
+// Outcome of pushing a node.
+enum PushOut { Value { t: Table }, Full, DupId, BadParent, BadDepth }
+
+fn table_push(t: Table, n: Node) -> (result: PushOut) {
+    if t.count >= 64 {
+        return PushOut.Full;
+    }
+    if table_has_id(t, n.id) {
+        return PushOut.DupId;
+    }
+    if n.parent == 0 {
+        return table_push_root(t, n);
+    }
+    return table_push_child(t, n);
+}
+
+fn table_push_root(t: Table, n: Node) -> (result: PushOut) {
+    if t.count != 0 {
+        return PushOut.BadParent;
+    }
+    return PushOut.Value { t: table_append(t, n, 64, 0) };
+}
+
+fn table_push_child(t: Table, fresh: Node) -> (result: PushOut) {
+    return match table_index_of(t, fresh.parent) {
+        FindOut.Value { n, idx } => table_push_at(t, fresh, idx),
+        FindOut.Missing => PushOut.BadParent,
+    };
+}
+
+fn table_push_at(t: Table, n: Node, pidx: u64) -> (result: PushOut) {
+    let pnodes: [Node; 64] = t.nodes;
+    let pnode: Node = pnodes[pidx];
+    let depth: u64 = pnode.depth + 1;
+    if depth > 8 {
+        return PushOut.BadDepth;
+    }
+    let placed: Table = table_append(t, n, pidx, depth);
+    return PushOut.Value { t: table_credit(placed, pidx, n) };
+}
+
+// Credits the push upward: the direct parent gains one child, and
+// every ancestor's subtree height grows by the new node's height.
+// The walk follows parent indices (bounded, never recursive), so
+// heights stay exact no matter how deep the table grows.
+record Credit { t: Table, idx: u64, dh: u64, first: bool, live: bool }
+
+fn table_credit(t: Table, pidx: u64, n: Node) -> (result: Table) {
+    iterate s up_to 8 carrying a: Credit = Credit { t: t, idx: pidx, dh: kind_height(n.kind), first: true, live: true } {
+        next a = table_credit_step(a);
+    }
+    return a.t;
+}
+
+fn table_credit_step(a: Credit) -> (result: Credit) {
+    if a.live == false {
+        return a;
+    }
+    if a.idx >= 64 {
+        return Credit { t: a.t, idx: a.idx, dh: a.dh, first: false, live: false };
+    }
+    let ns: [Node; 64] = a.t.nodes;
+    let p: Node = ns[a.idx];
+    let credited: Node = Node {
+        ..p,
+        kids: credit_kids(p.kids, a.first),
+        h: p.h + a.dh
+    };
+    return Credit {
+        t: Table { nodes: replace(a.t.nodes, a.idx, credited), count: a.t.count },
+        idx: p.pidx,
+        dh: a.dh,
+        first: false,
+        live: true
+    };
+}
+
+fn credit_kids(kids: u64, first: bool) -> (result: u64) {
+    if first {
+        return kids + 1;
+    }
+    return kids;
+}
+
+// `sx` captures the sibling index (parent's kid count before this
+// push) and `sy` the y-offset within the parent (parent's height
+// before this push), so layout needs no sibling scans later.
+fn table_append(t: Table, n: Node, pidx: u64, depth: u64) -> (result: Table) {
+    let anchor: Node = table_append_anchor(t, pidx);
+    let placed: Node = Node {
+        id: n.id,
+        parent: n.parent,
+        pidx: pidx,
+        kind: n.kind,
+        role: n.role,
+        name: n.name,
+        text: n.text,
+        intent: n.intent,
+        enabled: n.enabled,
+        status: n.status,
+        depth: depth,
+        kids: 0,
+        h: kind_height(n.kind),
+        sx: anchor.kids,
+        sy: anchor.h
+    };
+    return Table { nodes: replace(t.nodes, t.count, placed), count: t.count + 1 };
+}
+
+fn table_append_anchor(t: Table, pidx: u64) -> (result: Node) {
+    if pidx >= 64 {
+        return empty_node();
+    }
+    let pnodes: [Node; 64] = t.nodes;
+    return pnodes[pidx];
+}
+
+fn table_has_id(t: Table, id: u64) -> (result: bool) {
+    iterate i over t.nodes carrying found: bool = false {
+        next found = table_id_cell(found, t, id, i);
+    }
+    return found;
+}
+
+fn table_id_cell(found: bool, t: Table, id: u64, i: u64) -> (result: bool) {
+    if i >= t.count {
+        return found;
+    }
+    return found || t.nodes[i].id == id;
+}
+
+enum FindOut { Value { n: Node, idx: u64 }, Missing }
+
+fn table_get(t: Table, id: u64) -> (result: FindOut) {
+    return table_index_of(t, id);
+}
+
+fn table_index_of(t: Table, id: u64) -> (result: FindOut) {
+    iterate i over t.nodes carrying out: FindOut = FindOut.Missing {
+        next out = table_index_cell(out, t, id, i);
+    }
+    return out;
+}
+
+fn table_index_cell(out: FindOut, t: Table, id: u64, i: u64) -> (result: FindOut) {
+    return match out {
+        FindOut.Value { n, idx } => out,
+        FindOut.Missing => table_index_live(t, id, i),
+    };
+}
+
+fn table_index_live(t: Table, id: u64, i: u64) -> (result: FindOut) {
+    if i >= t.count {
+        return FindOut.Missing;
+    }
+    if t.nodes[i].id == id {
+        return FindOut.Value { n: t.nodes[i], idx: i };
+    }
+    return FindOut.Missing;
+}
+
+fn table_count(t: Table) -> (result: u64) {
+    return t.count;
+}
+
+// Boundary write for ephemeral field text: the owner applies the
+// edited value after an Edit intent, explicitly and visibly.
+enum SetTextOut { Value { t: Table }, Missing, WrongKind }
+
+fn table_set_text(t: Table, id: u64, text: Label) -> (result: SetTextOut) {
+    return match table_index_of(t, id) {
+        FindOut.Value { n, idx } => table_set_text_check(t, n, idx, text),
+        FindOut.Missing => SetTextOut.Missing,
+    };
+}
+
+fn table_set_text_check(t: Table, n: Node, idx: u64, text: Label) -> (result: SetTextOut) {
+    return match n.kind {
+        Kind.Input => SetTextOut.Value {
+            t: Table {
+                nodes: replace(t.nodes, idx, Node { ..n, text: text }),
+                count: t.count
+            }
+        },
+        Kind.Screen => SetTextOut.WrongKind,
+        Kind.Row => SetTextOut.WrongKind,
+        Kind.Column => SetTextOut.WrongKind,
+        Kind.List => SetTextOut.WrongKind,
+        Kind.Item => SetTextOut.WrongKind,
+        Kind.Text => SetTextOut.WrongKind,
+        Kind.Button => SetTextOut.WrongKind,
+        Kind.Status => SetTextOut.WrongKind,
+    };
+}

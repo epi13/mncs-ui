@@ -1,0 +1,155 @@
+mncs 0.18;
+
+// mncs.ui.a11y.v1 — structural accessibility guarantees.
+//
+// The model enforces what it can know without judgment:
+// interactive rows (Button/Input/Item) carry a nonempty accessible
+// name; sibling rows under one parent do not share a name; Status
+// rows carry no intent. These are DATA outcomes (Unnamed/DupName/
+// StatusIntent), checked headlessly over the table — the renderer
+// boundary then maps surviving metadata to platform APIs, which no
+// headless tree can guarantee (documented, not faked).
+
+module mncs.ui.a11y.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+
+enum A11yOut { Ok, Unnamed { id: u64 }, DupName { id: u64 }, StatusIntent { id: u64 } }
+
+fn a11y_check(t: Table) -> (result: A11yOut) {
+    return match a11y_named(t) {
+        A11yOut.Ok => a11y_unique(t),
+        A11yOut.Unnamed { id } => A11yOut.Unnamed { id: id },
+        A11yOut.DupName { id } => A11yOut.DupName { id: id },
+        A11yOut.StatusIntent { id } => A11yOut.StatusIntent { id: id },
+    };
+}
+
+fn a11y_named(t: Table) -> (result: A11yOut) {
+    iterate i over t.nodes carrying out: A11yOut = A11yOut.Ok {
+        next out = a11y_named_cell(out, t, i);
+    }
+    return out;
+}
+
+fn a11y_named_cell(out: A11yOut, t: Table, i: u64) -> (result: A11yOut) {
+    return match out {
+        A11yOut.Ok => a11y_named_live(t, i),
+        A11yOut.Unnamed { id } => out,
+        A11yOut.DupName { id } => out,
+        A11yOut.StatusIntent { id } => out,
+    };
+}
+
+fn a11y_named_live(t: Table, i: u64) -> (result: A11yOut) {
+    if i >= t.count {
+        return A11yOut.Ok;
+    }
+    return match a11y_needs_name(t.nodes[i].kind) {
+        A11yOut.Ok => a11y_status_rule(t.nodes[i]),
+        A11yOut.Unnamed { id } => a11y_unnamed_check(t.nodes[i]),
+        A11yOut.DupName { id } => A11yOut.Ok,
+        A11yOut.StatusIntent { id } => A11yOut.Ok,
+    };
+}
+
+fn a11y_needs_name(k: Kind) -> (result: A11yOut) {
+    return match k {
+        Kind.Button => A11yOut.Unnamed { id: 0 },
+        Kind.Input => A11yOut.Unnamed { id: 0 },
+        Kind.Item => A11yOut.Unnamed { id: 0 },
+        Kind.Screen => A11yOut.Ok,
+        Kind.Row => A11yOut.Ok,
+        Kind.Column => A11yOut.Ok,
+        Kind.List => A11yOut.Ok,
+        Kind.Text => A11yOut.Ok,
+        Kind.Status => A11yOut.Ok,
+    };
+}
+
+fn a11y_unnamed_check(n: Node) -> (result: A11yOut) {
+    if n.name.len == 0 {
+        return A11yOut.Unnamed { id: n.id };
+    }
+    return a11y_status_rule(n);
+}
+
+fn a11y_status_rule(n: Node) -> (result: A11yOut) {
+    return match n.kind {
+        Kind.Status => a11y_status_intent(n),
+        Kind.Screen => A11yOut.Ok,
+        Kind.Row => A11yOut.Ok,
+        Kind.Column => A11yOut.Ok,
+        Kind.List => A11yOut.Ok,
+        Kind.Item => A11yOut.Ok,
+        Kind.Text => A11yOut.Ok,
+        Kind.Button => A11yOut.Ok,
+        Kind.Input => A11yOut.Ok,
+    };
+}
+
+fn a11y_status_intent(n: Node) -> (result: A11yOut) {
+    if n.intent == 0 {
+        return A11yOut.Ok;
+    }
+    return A11yOut.StatusIntent { id: n.id };
+}
+
+fn a11y_unique(t: Table) -> (result: A11yOut) {
+    iterate i over t.nodes carrying out: A11yOut = A11yOut.Ok {
+        next out = a11y_unique_cell(out, t, i);
+    }
+    return out;
+}
+
+fn a11y_unique_cell(out: A11yOut, t: Table, i: u64) -> (result: A11yOut) {
+    return match out {
+        A11yOut.Ok => a11y_dup_after(t, i),
+        A11yOut.Unnamed { id } => out,
+        A11yOut.DupName { id } => out,
+        A11yOut.StatusIntent { id } => out,
+    };
+}
+
+fn a11y_dup_after(t: Table, i: u64) -> (result: A11yOut) {
+    if i >= t.count {
+        return A11yOut.Ok;
+    }
+    if t.nodes[i].name.len == 0 {
+        return A11yOut.Ok;
+    }
+    return a11y_dup_scan(t, t.nodes[i], i + 1);
+}
+
+fn a11y_dup_scan(t: Table, n: Node, j: u64) -> (result: A11yOut) {
+    iterate k over t.nodes carrying out: A11yOut = A11yOut.Ok {
+        next out = a11y_dup_cell(out, t, n, j, k);
+    }
+    return out;
+}
+
+fn a11y_dup_cell(out: A11yOut, t: Table, n: Node, j: u64, k: u64) -> (result: A11yOut) {
+    return match out {
+        A11yOut.Ok => a11y_dup_live(t, n, j, k),
+        A11yOut.Unnamed { id } => out,
+        A11yOut.DupName { id } => out,
+        A11yOut.StatusIntent { id } => out,
+    };
+}
+
+fn a11y_dup_live(t: Table, n: Node, j: u64, k: u64) -> (result: A11yOut) {
+    if k < j {
+        return A11yOut.Ok;
+    }
+    if k >= t.count {
+        return A11yOut.Ok;
+    }
+    if t.nodes[k].parent != n.parent {
+        return A11yOut.Ok;
+    }
+    if label_eq(t.nodes[k].name, n.name) {
+        return A11yOut.DupName { id: t.nodes[k].id };
+    }
+    return A11yOut.Ok;
+}
