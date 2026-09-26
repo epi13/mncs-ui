@@ -1,0 +1,96 @@
+mncs 0.18;
+
+// mncs.ui.build.v1 — widget constructors.
+//
+// Constructors assign semantic identity, role, and content; the
+// table assigns structure (depth, parent links, heights) at push.
+// No constructor performs effects, reads global state, or invents
+// identity: every id, name, and intent arrives as an explicit
+// argument, so trees are deterministic functions of their inputs.
+//
+// Intent ids reference canonical operations owned elsewhere
+// (Control/Test/Forge); 0 means "no operation". UI never defines
+// what an operation does — it only carries the reference from the
+// interaction site to the owning subsystem.
+
+module mncs.ui.build.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+
+fn mk_node(id: u64, parent: u64, kind: Kind, role: Role, name: Label) -> (result: Node) {
+    return Node {
+        id: id,
+        parent: parent,
+        pidx: 64,
+        kind: kind,
+        role: role,
+        name: name,
+        text: label_empty(),
+        intent: 0,
+        enabled: true,
+        status: Status.Blank,
+        depth: 0,
+        kids: 0,
+        h: kind_height(kind),
+        sx: 0,
+        sy: 0
+    };
+}
+
+fn screen(id: u64, name: Label) -> (result: Node) {
+    return mk_node(id, 0, Kind.Screen, Role.Window, name);
+}
+
+fn heading(id: u64, parent: u64, name: Label) -> (result: Node) {
+    return mk_node(id, parent, Kind.Text, Role.Heading, name);
+}
+
+fn text_line(id: u64, parent: u64, content: Label) -> (result: Node) {
+    let n: Node = mk_node(id, parent, Kind.Text, Role.Text, content);
+    return Node { ..n, text: content };
+}
+
+fn row(id: u64, parent: u64, name: Label) -> (result: Node) {
+    return mk_node(id, parent, Kind.Row, Role.Group, name);
+}
+
+fn column(id: u64, parent: u64, name: Label) -> (result: Node) {
+    return mk_node(id, parent, Kind.Column, Role.Group, name);
+}
+
+fn list_view(id: u64, parent: u64, name: Label) -> (result: Node) {
+    return mk_node(id, parent, Kind.List, Role.List, name);
+}
+
+// A button with an accessible name and the operation it invokes.
+// A nameless button cannot be built: the name is a parameter, and
+// the accessibility layer re-checks it structurally.
+fn button(id: u64, parent: u64, name: Label, intent: u64) -> (result: Node) {
+    let n: Node = mk_node(id, parent, Kind.Button, Role.Button, name);
+    return Node { ..n, intent: intent };
+}
+
+fn disabled(n: Node) -> (result: Node) {
+    return Node { ..n, enabled: false };
+}
+
+// A text field with its current value; edits arrive as Edit events,
+// never as direct mutation.
+fn input(id: u64, parent: u64, name: Label, value: Label, intent: u64) -> (result: Node) {
+    let n: Node = mk_node(id, parent, Kind.Input, Role.TextField, name);
+    return Node { ..n, text: value, intent: intent };
+}
+
+// A selectable status row: accessible name, domain status, and the
+// selection intent.
+fn item(id: u64, parent: u64, name: Label, status: Status, intent: u64) -> (result: Node) {
+    let n: Node = mk_node(id, parent, Kind.Item, Role.ListItem, name);
+    return Node { ..n, intent: intent, status: status };
+}
+
+// A standalone status line (no interaction, no intent).
+fn status_line(id: u64, parent: u64, name: Label, status: Status) -> (result: Node) {
+    let n: Node = mk_node(id, parent, Kind.Status, Role.Status, name);
+    return Node { ..n, intent: 0, enabled: false, status: status };
+}

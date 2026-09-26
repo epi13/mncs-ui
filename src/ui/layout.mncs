@@ -1,0 +1,122 @@
+mncs 0.18;
+
+// mncs.ui.layout.v1 — deterministic cell layout in one linear pass.
+//
+// Every node maps to a `Rect { x, y, w, h }` in abstract cells (not
+// pixels, not terminal cells — the renderer converts). Rules:
+//
+//   - the root fills (0, 0, width, h);
+//   - Screen/Column/List children stack full-width at y + sy,
+//     where `sy` is the accumulated subtree height captured at push;
+//   - Row children split the parent width equally (`sx` is the
+//     sibling index captured at push; the last child takes the
+//     remainder), sharing the parent y;
+//   - leaves keep h = 1 from construction; containers carry the
+//     summed heights maintained by push-time credit.
+//
+// Because push maintains (depth, kids, h, sx, sy), layout is a
+// SINGLE iterate pass reading only already-written parent rects
+// (parents always precede children in table order). Resize is a
+// pure re-run at a new width: same table, same order, new rects.
+// A zero width is `BadWidth` data. Style never participates.
+
+module mncs.ui.layout.v1;
+
+use mncs.ui.node;
+
+record Rect { x: u64, y: u64, w: u64, h: u64 }
+
+record Layout { ids: [u64; 64], rects: [Rect; 64], count: u64 }
+
+fn empty_rect() -> (result: Rect) {
+    return Rect { x: 0, y: 0, w: 0, h: 0 };
+}
+
+fn empty_layout() -> (result: Layout) {
+    return Layout { ids: [0; 64], rects: empty_layout_rects(), count: 0 };
+}
+
+fn empty_layout_rects() -> (result: [Rect; 64]) {
+    return [
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect(),
+        empty_rect(), empty_rect(), empty_rect(), empty_rect()
+    ];
+}
+
+enum LayoutOut { Value { l: Layout }, BadWidth }
+
+fn layout_table(t: Table, width: u64) -> (result: LayoutOut) {
+    if width == 0 {
+        return LayoutOut.BadWidth;
+    }
+    iterate i over t.nodes carrying l: Layout = empty_layout() {
+        next l = layout_cell(l, t, width, i);
+    }
+    return LayoutOut.Value { l: l };
+}
+
+fn layout_cell(l: Layout, t: Table, width: u64, i: u64) -> (result: Layout) {
+    if i >= t.count {
+        return l;
+    }
+    let r: Rect = rect_for(l, t, t.nodes[i], width);
+    return Layout {
+        ids: replace(l.ids, l.count, t.nodes[i].id),
+        rects: replace(l.rects, l.count, r),
+        count: l.count + 1
+    };
+}
+
+fn rect_for(l: Layout, t: Table, n: Node, width: u64) -> (result: Rect) {
+    if n.parent == 0 {
+        return Rect { x: 0, y: 0, w: width, h: n.h };
+    }
+    let p: Rect = l.rects[n.pidx];
+    let pk: Kind = t.nodes[n.pidx].kind;
+    let nkids: u64 = t.nodes[n.pidx].kids;
+    return match pk {
+        Kind.Row => rect_in_row(p, n, nkids),
+        Kind.Screen => rect_stacked(p, n),
+        Kind.Column => rect_stacked(p, n),
+        Kind.List => rect_stacked(p, n),
+        Kind.Item => rect_stacked(p, n),
+        Kind.Text => rect_stacked(p, n),
+        Kind.Button => rect_stacked(p, n),
+        Kind.Input => rect_stacked(p, n),
+        Kind.Status => rect_stacked(p, n),
+    };
+}
+
+fn rect_stacked(p: Rect, n: Node) -> (result: Rect) {
+    return Rect { x: p.x, y: p.y + n.sy, w: p.w, h: n.h };
+}
+
+fn rect_in_row(p: Rect, n: Node, nkids: u64) -> (result: Rect) {
+    let each: u64 = p.w / nkids;
+    if n.sx + 1 >= nkids {
+        return Rect { x: p.x + n.sx * each, y: p.y, w: p.w - n.sx * each, h: n.h };
+    }
+    return Rect { x: p.x + n.sx * each, y: p.y, w: each, h: n.h };
+}
+
+// Total display height of a laid-out table: the root height.
+fn layout_height(t: Table) -> (result: u64) {
+    if t.count == 0 {
+        return 0;
+    }
+    return t.nodes[0].h;
+}

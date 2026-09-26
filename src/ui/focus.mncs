@@ -1,0 +1,166 @@
+mncs 0.18;
+
+// mncs.ui.focus.v1 — explicit focus ownership.
+//
+// Focus is a single current node id plus validity, kept OUTSIDE the
+// node table so there is exactly one source of truth (no per-node
+// focus flags to drift). Traversal walks table order, wraps, and
+// skips non-focusable rows. Removing the focused node resolves
+// structurally: nearest live focusable row, or an explicit Empty —
+// never a dangling id, never backend accident.
+
+module mncs.ui.focus.v1;
+
+use mncs.ui.node;
+
+record Focus { current: u64, valid: bool }
+
+fn focus_empty() -> (result: Focus) {
+    return Focus { current: 0, valid: false };
+}
+
+fn focus_on(id: u64) -> (result: Focus) {
+    return Focus { current: id, valid: true };
+}
+
+// Outcome of a focus request.
+enum FocusReqOut { Value { f: Focus }, UnknownTarget, NotFocusable }
+
+fn focus_request(t: Table, f: Focus, id: u64) -> (result: FocusReqOut) {
+    return match table_get(t, id) {
+        FindOut.Value { n, idx } => focus_request_check(n, id),
+        FindOut.Missing => FocusReqOut.UnknownTarget,
+    };
+}
+
+fn focus_request_check(n: Node, id: u64) -> (result: FocusReqOut) {
+    if node_focusable(n) == false {
+        return FocusReqOut.NotFocusable;
+    }
+    return FocusReqOut.Value { f: focus_on(id) };
+}
+
+// First focusable row in table order, if any.
+enum FocusScanOut { Value { f: Focus }, None }
+
+fn focus_first(t: Table) -> (result: FocusScanOut) {
+    return focus_scan_from(t, 0);
+}
+
+fn focus_scan_from(t: Table, start: u64) -> (result: FocusScanOut) {
+    iterate i over t.nodes carrying out: FocusScanOut = FocusScanOut.None {
+        next out = focus_scan_cell(out, t, start, i);
+    }
+    return out;
+}
+
+fn focus_scan_cell(out: FocusScanOut, t: Table, start: u64, i: u64) -> (result: FocusScanOut) {
+    return match out {
+        FocusScanOut.Value { f } => out,
+        FocusScanOut.None => focus_scan_live(t, start, i),
+    };
+}
+
+fn focus_scan_live(t: Table, start: u64, i: u64) -> (result: FocusScanOut) {
+    if i < start {
+        return FocusScanOut.None;
+    }
+    if i >= t.count {
+        return FocusScanOut.None;
+    }
+    if node_focusable(t.nodes[i]) == false {
+        return FocusScanOut.None;
+    }
+    return FocusScanOut.Value { f: focus_on(t.nodes[i].id) };
+}
+
+// Next focusable row after `current`, wrapping to the start.
+// Unknown current focuses the first row (explicit, not accidental).
+fn focus_next(t: Table, f: Focus) -> (result: FocusScanOut) {
+    if f.valid == false {
+        return focus_first(t);
+    }
+    return match table_index_of(t, f.current) {
+        FindOut.Value { n, idx } => focus_next_from(t, idx),
+        FindOut.Missing => focus_first(t),
+    };
+}
+
+fn focus_next_from(t: Table, idx: u64) -> (result: FocusScanOut) {
+    return match focus_scan_from(t, idx + 1) {
+        FocusScanOut.Value { f } => FocusScanOut.Value { f: f },
+        FocusScanOut.None => focus_scan_from(t, 0),
+    };
+}
+
+// Previous focusable row before `current`, wrapping to the end.
+// Implemented as a forward scan for the last focusable row at or
+// below the target index: one direction, no reverse iteration.
+fn focus_prev(t: Table, f: Focus) -> (result: FocusScanOut) {
+    if f.valid == false {
+        return focus_last(t);
+    }
+    return match table_index_of(t, f.current) {
+        FindOut.Value { n, idx } => focus_prev_from(t, idx),
+        FindOut.Missing => focus_last(t),
+    };
+}
+
+fn focus_prev_from(t: Table, idx: u64) -> (result: FocusScanOut) {
+    return match focus_last_at_or_below(t, idx) {
+        FocusScanOut.Value { f } => FocusScanOut.Value { f: f },
+        FocusScanOut.None => focus_last(t),
+    };
+}
+
+fn focus_last(t: Table) -> (result: FocusScanOut) {
+    return focus_last_at_or_below(t, 64);
+}
+
+fn focus_last_at_or_below(t: Table, bound: u64) -> (result: FocusScanOut) {
+    iterate i over t.nodes carrying out: FocusScanOut = FocusScanOut.None {
+        next out = focus_last_cell(out, t, bound, i);
+    }
+    return out;
+}
+
+fn focus_last_cell(out: FocusScanOut, t: Table, bound: u64, i: u64) -> (result: FocusScanOut) {
+    if i >= t.count {
+        return out;
+    }
+    if i >= bound {
+        return out;
+    }
+    if node_focusable(t.nodes[i]) == false {
+        return out;
+    }
+    return FocusScanOut.Value { f: focus_on(t.nodes[i].id) };
+}
+
+// Resolve focus after the focused node was removed: nearest live
+// focusable row (forward first, then anywhere), or explicit Empty.
+enum FocusKept { Kept, Moved { f: Focus }, Empty }
+
+fn focus_after_remove(t: Table, f: Focus) -> (result: FocusKept) {
+    if f.valid == false {
+        return FocusKept.Empty;
+    }
+    return match table_get(t, f.current) {
+        FindOut.Value { n, idx } => focus_after_remove_check(n, f),
+        FindOut.Missing => focus_after_remove_moved(t),
+    };
+}
+
+fn focus_after_remove_check(n: Node, f: Focus) -> (result: FocusKept) {
+    if node_focusable(n) {
+        return FocusKept.Kept;
+    }
+    return FocusKept.Empty;
+}
+
+fn focus_after_remove_moved(t: Table) -> (result: FocusKept) {
+    return match focus_first(t) {
+        FocusScanOut.Value { f } => FocusKept.Moved { f: f },
+        FocusScanOut.None => FocusKept.Empty,
+    };
+}

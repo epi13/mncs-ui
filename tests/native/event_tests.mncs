@@ -1,0 +1,155 @@
+mncs 0.18;
+
+// Native contracts for typed event routing: selection and
+// activation emit intents, edits emit with field identity, focus
+// moves ownership, and every invalid target reports its reason.
+// No device details appear: all events are already semantic.
+
+module mncs.ui.test.event.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.focus;
+use mncs.ui.event;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+// screen1 > list2 > item10(intent 1), button3(intent 2, disabled),
+// input4(intent 3), text5.
+fn etable() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, list_view(2, 1, nm()));
+    let t3: Table = push_ok(t2, item(10, 2, nm(), Status.Fail, 1));
+    let t4: Table = push_ok(t3, disabled(button(3, 2, nm(), 2)));
+    let t5: Table = push_ok(t4, input(4, 2, nm(), nm(), 3));
+    return push_ok(t5, text_line(5, 2, nm()));
+}
+
+test select_and_activate_emit() -> (result: TestResult) {
+    let t: Table = etable();
+    let f: Focus = focus_empty();
+    let sel: bool = match dispatch(t, f, UiEvent.Select { id: 10 }) {
+        DispatchOut.Emitted { intent } => intent.op == 1 && intent.arg == 10,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => false,
+    };
+    return from_assertion(equals_bool(true, sel, 8401));
+}
+
+test activate_button_and_rejections() -> (result: TestResult) {
+    let t: Table = etable();
+    let f: Focus = focus_empty();
+    let dis: bool = match dispatch(t, f, UiEvent.Activate { id: 3 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => false,
+            Reason.DisabledTarget => true,
+            Reason.WrongKind => false,
+            Reason.NotFocusable => false,
+            Reason.NoIntent => false,
+        },
+    };
+    let unk: bool = match dispatch(t, f, UiEvent.Activate { id: 99 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => true,
+            Reason.DisabledTarget => false,
+            Reason.WrongKind => false,
+            Reason.NotFocusable => false,
+            Reason.NoIntent => false,
+        },
+    };
+    let wrong: bool = match dispatch(t, f, UiEvent.Activate { id: 5 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => false,
+            Reason.DisabledTarget => false,
+            Reason.WrongKind => true,
+            Reason.NotFocusable => false,
+            Reason.NoIntent => false,
+        },
+    };
+    let selbtn: bool = match dispatch(t, f, UiEvent.Select { id: 10 }) {
+        DispatchOut.Emitted { intent } => intent.op == 1,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => false,
+    };
+    return from_assertion(equals_bool(true, dis && unk && wrong && selbtn, 8402));
+}
+
+test edit_and_focus_events() -> (result: TestResult) {
+    let t: Table = etable();
+    let f: Focus = focus_empty();
+    let v: Label = label_from_8(104, 105, 0, 0, 0, 0, 0, 0, 2);
+    let edit: bool = match dispatch(t, f, UiEvent.Edit { id: 4, text: v }) {
+        DispatchOut.Emitted { intent } => intent.op == 3 && intent.arg == 4,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => false,
+    };
+    let editbtn: bool = match dispatch(t, f, UiEvent.Edit { id: 10, text: v }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => false,
+            Reason.DisabledTarget => false,
+            Reason.WrongKind => true,
+            Reason.NotFocusable => false,
+            Reason.NoIntent => false,
+        },
+    };
+    let foc: bool = match dispatch(t, f, UiEvent.Focus { id: 4 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f: nf } => nf.current == 4,
+        DispatchOut.Rejected { reason } => false,
+    };
+    let focbad: bool = match dispatch(t, f, UiEvent.Focus { id: 5 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f: nf } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => false,
+            Reason.DisabledTarget => false,
+            Reason.WrongKind => false,
+            Reason.NotFocusable => true,
+            Reason.NoIntent => false,
+        },
+    };
+    return from_assertion(equals_bool(true, edit && editbtn && foc && focbad, 8403));
+}
+
+test intentless_button_rejected() -> (result: TestResult) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t: Table = push_ok(t1, button(8, 1, nm(), 0));
+    let f: Focus = focus_empty();
+    let nointent: bool = match dispatch(t, f, UiEvent.Activate { id: 8 }) {
+        DispatchOut.Emitted { intent } => false,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => match reason {
+            Reason.UnknownTarget => false,
+            Reason.DisabledTarget => false,
+            Reason.WrongKind => false,
+            Reason.NotFocusable => false,
+            Reason.NoIntent => true,
+        },
+    };
+    return from_assertion(equals_bool(true, nointent, 8404));
+}

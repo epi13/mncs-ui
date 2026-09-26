@@ -1,0 +1,160 @@
+mncs 0.18;
+
+// mncs.ui.event.v1 — typed semantic events and intent routing.
+//
+// Device input (pointer, key, touch, terminal sequence) NEVER reaches
+// this layer: renderers and TUI normalize device details into these
+// semantic events. A button does not know what clicked it — mouse,
+// Enter key, touchscreen, or agent activation all arrive as
+// `Activate { id }`. That separation is what makes renderers
+// reusable and agents first-class interactors.
+//
+// Handlers are DATA, not closures: a node carries `intent`, an
+// opaque (op, arg) pair referencing a canonical operation owned
+// elsewhere (Control/Test/Forge op registries). Dispatch validates
+// the target and emits the intent; the owning subsystem executes.
+// MNCS cannot express capturing closures today (pressure
+// P-UI-CLOSURE); intents-as-data are the architecture, not a
+// workaround awaiting syntax sugar.
+
+module mncs.ui.event.v1;
+
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.focus;
+
+// Semantic UI events. Select chooses a list item; Activate presses
+// a control; Edit replaces a field value; Focus moves ownership.
+enum UiEvent {
+    Select { id: u64 },
+    Activate { id: u64 },
+    Edit { id: u64, text: Label },
+    Focus { id: u64 }
+}
+
+// A semantic intent: `op` names the canonical operation, `arg`
+// carries the originating node id. Both halves are data.
+record Intent { op: u64, arg: u64 }
+
+fn no_intent() -> (result: Intent) {
+    return Intent { op: 0, arg: 0 };
+}
+
+// Rejection reasons. Disabled controls reject BEFORE kind checks so
+// a disabled button and a missing node never share a verdict.
+enum Reason { UnknownTarget, DisabledTarget, WrongKind, NotFocusable, NoIntent }
+
+// Outcome of routing one event.
+enum DispatchOut {
+    Emitted { intent: Intent },
+    FocusMoved { f: Focus },
+    Rejected { reason: Reason }
+}
+
+fn dispatch(t: Table, f: Focus, ev: UiEvent) -> (result: DispatchOut) {
+    return match ev {
+        UiEvent.Select { id } => dispatch_select(t, id),
+        UiEvent.Activate { id } => dispatch_activate(t, id),
+        UiEvent.Edit { id, text } => dispatch_edit(t, id),
+        UiEvent.Focus { id } => dispatch_focus(t, f, id),
+    };
+}
+
+// Select targets items; the item's intent fires with the item id.
+fn dispatch_select(t: Table, id: u64) -> (result: DispatchOut) {
+    return match table_get(t, id) {
+        FindOut.Value { n, idx } => dispatch_select_check(n),
+        FindOut.Missing => DispatchOut.Rejected { reason: Reason.UnknownTarget },
+    };
+}
+
+fn dispatch_select_check(n: Node) -> (result: DispatchOut) {
+    if n.enabled == false {
+        return DispatchOut.Rejected { reason: Reason.DisabledTarget };
+    }
+    return match n.kind {
+        Kind.Item => dispatch_emit(n),
+        Kind.Screen => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Row => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Column => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.List => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Text => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Button => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Input => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Status => DispatchOut.Rejected { reason: Reason.WrongKind },
+    };
+}
+
+// Activate targets buttons; Edit targets inputs (any full Label,
+// validated by the text layer, not here).
+fn dispatch_activate(t: Table, id: u64) -> (result: DispatchOut) {
+    return match table_get(t, id) {
+        FindOut.Value { n, idx } => dispatch_activate_check(n),
+        FindOut.Missing => DispatchOut.Rejected { reason: Reason.UnknownTarget },
+    };
+}
+
+fn dispatch_activate_check(n: Node) -> (result: DispatchOut) {
+    if n.enabled == false {
+        return DispatchOut.Rejected { reason: Reason.DisabledTarget };
+    }
+    return match n.kind {
+        Kind.Button => dispatch_emit(n),
+        Kind.Screen => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Row => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Column => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.List => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Item => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Text => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Input => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Status => DispatchOut.Rejected { reason: Reason.WrongKind },
+    };
+}
+
+fn dispatch_edit(t: Table, id: u64) -> (result: DispatchOut) {
+    return match table_get(t, id) {
+        FindOut.Value { n, idx } => dispatch_edit_check(n, id),
+        FindOut.Missing => DispatchOut.Rejected { reason: Reason.UnknownTarget },
+    };
+}
+
+fn dispatch_edit_check(n: Node, id: u64) -> (result: DispatchOut) {
+    if n.enabled == false {
+        return DispatchOut.Rejected { reason: Reason.DisabledTarget };
+    }
+    return match n.kind {
+        Kind.Input => dispatch_emit_input(n, id),
+        Kind.Screen => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Row => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Column => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.List => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Item => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Text => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Button => DispatchOut.Rejected { reason: Reason.WrongKind },
+        Kind.Status => DispatchOut.Rejected { reason: Reason.WrongKind },
+    };
+}
+
+// The intent fires only when the node names an operation; a zero
+// intent is an explicit Rejected, never a silent no-op.
+fn dispatch_emit(n: Node) -> (result: DispatchOut) {
+    if n.intent == 0 {
+        return DispatchOut.Rejected { reason: Reason.NoIntent };
+    }
+    return DispatchOut.Emitted { intent: Intent { op: n.intent, arg: n.id } };
+}
+
+fn dispatch_emit_input(n: Node, id: u64) -> (result: DispatchOut) {
+    if n.intent == 0 {
+        return DispatchOut.Rejected { reason: Reason.NoIntent };
+    }
+    return DispatchOut.Emitted { intent: Intent { op: n.intent, arg: id } };
+}
+
+fn dispatch_focus(t: Table, f: Focus, id: u64) -> (result: DispatchOut) {
+    return match focus_request(t, f, id) {
+        FocusReqOut.Value { f: nf } => DispatchOut.FocusMoved { f: nf },
+        FocusReqOut.UnknownTarget => DispatchOut.Rejected { reason: Reason.UnknownTarget },
+        FocusReqOut.NotFocusable => DispatchOut.Rejected { reason: Reason.NotFocusable },
+    };
+}

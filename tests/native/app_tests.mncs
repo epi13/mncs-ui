@@ -1,0 +1,224 @@
+mncs 0.18;
+
+// Native contracts for the status-board fixture: canonical state
+// projects to tables, intents update state, rebuilds reflect
+// results, filters derive, edits commit, and PASS/FAIL/UNKNOWN stay
+// distinct end to end. The full loop runs headlessly: no pixels,
+// no coordinates.
+
+module mncs.ui.test.app.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+use mncs.ui.focus;
+use mncs.ui.event;
+use mncs.ui.layout;
+use mncs.ui.render;
+use mncs.ui.reconcile;
+use mncs.ui.a11y;
+use mncs.ui.app;
+
+fn title_l() -> (result: Label) {
+    return label_from_8(98, 111, 97, 114, 100, 0, 0, 0, 5);
+}
+
+fn rerun_l() -> (result: Label) {
+    return label_from_8(114, 101, 114, 117, 110, 0, 0, 0, 5);
+}
+
+fn filter_l() -> (result: Label) {
+    return label_from_8(102, 105, 108, 116, 101, 114, 0, 0, 6);
+}
+
+fn alpha() -> (result: Label) {
+    return label_from_8(97, 108, 112, 104, 97, 0, 0, 0, 5);
+}
+
+fn beta() -> (result: Label) {
+    return label_from_8(98, 101, 116, 97, 0, 0, 0, 0, 4);
+}
+
+fn gamma() -> (result: Label) {
+    return label_from_8(103, 97, 109, 109, 97, 0, 0, 0, 5);
+}
+
+fn add3() -> (result: Board) {
+    let b0: Board = board_empty();
+    let b1: Board = match board_add(b0, 10, alpha(), Status.Fail) {
+        BoardAddOut.Value { b } => b,
+        BoardAddOut.Full => b0,
+    };
+    let b2: Board = match board_add(b1, 11, beta(), Status.Pass) {
+        BoardAddOut.Value { b } => b,
+        BoardAddOut.Full => b1,
+    };
+    return match board_add(b2, 12, gamma(), Status.Unknown) {
+        BoardAddOut.Value { b } => b,
+        BoardAddOut.Full => b2,
+    };
+}
+
+fn build3(b: Board) -> (result: Table) {
+    return match build_board(b, title_l(), rerun_l(), filter_l()) {
+        BoardOut.Value { t } => t,
+        BoardOut.PushFailed { code } => table_empty(),
+    };
+}
+
+fn project40(t: Table, f: Focus) -> (result: Projection) {
+    let l: Layout = match layout_table(t, 40) {
+        LayoutOut.Value { l: ll } => ll,
+        LayoutOut.BadWidth => empty_layout(),
+    };
+    return project_table(t, l, f);
+}
+
+test build_projects_all_checks() -> (result: TestResult) {
+    let b: Board = add3();
+    let t: Table = build3(b);
+    let a11y: bool = match a11y_check(t) {
+        A11yOut.Ok => true,
+        A11yOut.Unnamed { id } => false,
+        A11yOut.DupName { id } => false,
+        A11yOut.StatusIntent { id } => false,
+    };
+    let p: Projection = project40(t, focus_empty());
+    return from_assertion(equals_bool(true, t.count == 9 && b.n == 3 && a11y && p.count == 9, 8801));
+}
+
+test select_updates_board() -> (result: TestResult) {
+    let b: Board = add3();
+    let t: Table = build3(b);
+    let f: Focus = focus_empty();
+    let sel: bool = match dispatch(t, f, UiEvent.Select { id: 11 }) {
+        DispatchOut.Emitted { intent } => apply_sel(b, intent),
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => false,
+    };
+    return from_assertion(equals_bool(true, sel, 8802));
+}
+
+fn apply_sel(b: Board, intent: Intent) -> (result: bool) {
+    return match apply_intent(b, intent) {
+        ApplyOut.Value { b: nb } => nb.selected == 11 && intent.op == 1 && intent.arg == 11,
+        ApplyOut.UnknownOp => false,
+        ApplyOut.UnknownItem => false,
+    };
+}
+
+test rerun_resolves_by_parity() -> (result: TestResult) {
+    // Even 10 reruns to Pass; odd 11 reruns to Fail. Verified on
+    // rebuilt projections, not on hidden state.
+    let even: bool = rerun_status(10, Status.Pass);
+    let odd: bool = rerun_status(11, Status.Fail);
+    return from_assertion(equals_bool(true, even && odd, 8803));
+}
+
+fn rerun_status(id: u64, want: Status) -> (result: bool) {
+    let b: Board = add3();
+    let sel: Board = match apply_intent(b, Intent { op: 1, arg: id }) {
+        ApplyOut.Value { b: nb } => nb,
+        ApplyOut.UnknownOp => b,
+        ApplyOut.UnknownItem => b,
+    };
+    let run: Board = match apply_intent(sel, Intent { op: 2, arg: 5 }) {
+        ApplyOut.Value { b: nb } => nb,
+        ApplyOut.UnknownOp => sel,
+        ApplyOut.UnknownItem => sel,
+    };
+    let p: Projection = project40(build3(run), focus_empty());
+    return match find_by_name(p, check_name(id)) {
+        LookupOut.Value { s } => status_eq(s.status, want),
+        LookupOut.Missing => false,
+    };
+}
+
+fn check_name(id: u64) -> (result: Label) {
+    if id == 10 {
+        return alpha();
+    }
+    if id == 11 {
+        return beta();
+    }
+    return gamma();
+}
+
+test filter_derives_rows() -> (result: TestResult) {
+    let b: Board = add3();
+    let al: Label = label_from_8(97, 108, 0, 0, 0, 0, 0, 0, 2);
+    let fb: Board = board_filter(b, al);
+    let t: Table = build3(fb);
+    // Only "alpha" survives: 9 rows minus the 2 filtered items.
+    return from_assertion(equals_bool(true, t.count == 7, 8804));
+}
+
+test edit_commits_through_table() -> (result: TestResult) {
+    let b: Board = add3();
+    let t: Table = build3(b);
+    let f: Focus = focus_empty();
+    let be: Label = label_from_8(98, 101, 0, 0, 0, 0, 0, 0, 2);
+    let emitted: bool = match dispatch(t, f, UiEvent.Edit { id: 6, text: be }) {
+        DispatchOut.Emitted { intent } => intent.op == 3,
+        DispatchOut.FocusMoved { f } => false,
+        DispatchOut.Rejected { reason } => false,
+    };
+    let written: bool = match table_set_text(t, 6, be) {
+        SetTextOut.Value { t: nt } => match table_get(nt, 6) {
+            FindOut.Value { n, idx } => label_eq(n.text, be),
+            FindOut.Missing => false,
+        },
+        SetTextOut.Missing => false,
+        SetTextOut.WrongKind => false,
+    };
+    let fb: Board = board_filter(b, be);
+    let ft: Table = build3(fb);
+    let shown: bool = ft.count == 7;
+    return from_assertion(equals_bool(true, emitted && written && shown, 8805));
+}
+
+test full_loop_select_rerun_reconcile() -> (result: TestResult) {
+    // Select 12 (Unknown), rerun (even -> Pass), rebuild, diff:
+    // exactly one Update carrying id 12, projection now Pass.
+    let b: Board = add3();
+    let old: Table = build3(b);
+    let sel: Board = match apply_intent(b, Intent { op: 1, arg: 12 }) {
+        ApplyOut.Value { b: nb } => nb,
+        ApplyOut.UnknownOp => b,
+        ApplyOut.UnknownItem => b,
+    };
+    let run: Board = match apply_intent(sel, Intent { op: 2, arg: 5 }) {
+        ApplyOut.Value { b: nb } => nb,
+        ApplyOut.UnknownOp => sel,
+        ApplyOut.UnknownItem => sel,
+    };
+    let new: Table = build3(run);
+    let d: Diff = diff_tables(old, new);
+    let upd: bool = d.count == 1 && diff_has(d, DiffTag.Update, 12);
+    let p: Projection = project40(new, focus_empty());
+    let now_pass: bool = match find_by_name(p, gamma()) {
+        LookupOut.Value { s } => status_eq(s.status, Status.Pass),
+        LookupOut.Missing => false,
+    };
+    return from_assertion(equals_bool(true, upd && now_pass, 8806));
+}
+
+test statuses_stay_distinct() -> (result: TestResult) {
+    let p: Projection = project40(build3(add3()), focus_empty());
+    let fa: bool = match find_by_name(p, alpha()) {
+        LookupOut.Value { s } => status_eq(s.status, Status.Fail),
+        LookupOut.Missing => false,
+    };
+    let pa: bool = match find_by_name(p, beta()) {
+        LookupOut.Value { s } => status_eq(s.status, Status.Pass),
+        LookupOut.Missing => false,
+    };
+    let un: bool = match find_by_name(p, gamma()) {
+        LookupOut.Value { s } => status_eq(s.status, Status.Unknown),
+        LookupOut.Missing => false,
+    };
+    let codes: bool = status_code(Status.Pass) == 1;
+    return from_assertion(equals_bool(true, fa && pa && un && codes, 8807));
+}

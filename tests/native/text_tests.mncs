@@ -1,0 +1,94 @@
+mncs 0.18;
+
+// Native contracts for bounded UI text: empty/push/full/drop,
+// concatenation with truncation refusal, byte-exact equality, prefix
+// matching, and opaque multi-byte UTF-8 preservation.
+
+module mncs.ui.test.text.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+
+fn rerun_label() -> (result: Label) {
+    return label_from_8(114, 101, 114, 117, 110, 0, 0, 0, 5);
+}
+
+test empty_and_push() -> (result: TestResult) {
+    let e: Label = label_empty();
+    let one: bool = match label_push(e, 104) {
+        LabelOut.Value { l } => l.len == 1 && l.bytes[0] == 104,
+        LabelOut.Full => false,
+    };
+    let two: bool = match label_push(match label_push(e, 104) {
+        LabelOut.Value { l } => l,
+        LabelOut.Full => e,
+    }, 105) {
+        LabelOut.Value { l } => l.len == 2 && l.bytes[1] == 105,
+        LabelOut.Full => false,
+    };
+    return from_assertion(equals_bool(true, e.len == 0 && one && two, 8101));
+}
+
+test drop_last_no_underflow() -> (result: TestResult) {
+    let r: Label = rerun_label();
+    let d: Label = label_drop_last(r);
+    let good: bool = d.len == 4 && d.bytes[4] == 0;
+    let empty: Label = label_drop_last(label_empty());
+    return from_assertion(equals_bool(true, good && empty.len == 0, 8102));
+}
+
+test concat_and_truncation() -> (result: TestResult) {
+    // "re" + "run" == "rerun"; 20 + 20 bytes refuses.
+    let re: Label = label_from_8(114, 101, 0, 0, 0, 0, 0, 0, 2);
+    let run: Label = label_from_8(114, 117, 110, 0, 0, 0, 0, 0, 3);
+    let good: bool = match label_cat(re, run) {
+        CatOut.Value { l } => label_eq(l, rerun_label()),
+        CatOut.Truncated => false,
+    };
+    let big: Label = label_from_8(97, 97, 97, 97, 97, 97, 97, 97, 8);
+    let big16: Label = match label_cat(big, big) {
+        CatOut.Value { l } => l,
+        CatOut.Truncated => big,
+    };
+    let big24: Label = match label_cat(big16, big) {
+        CatOut.Value { l } => l,
+        CatOut.Truncated => big16,
+    };
+    let refuse: bool = match label_cat(big24, big16) {
+        CatOut.Value { l } => false,
+        CatOut.Truncated => true,
+    };
+    return from_assertion(equals_bool(true, good && big16.len == 16 && big24.len == 24 && refuse, 8103));
+}
+
+test equality_ignores_padding() -> (result: TestResult) {
+    let a: Label = rerun_label();
+    let b: Label = rerun_label();
+    let c: Label = label_from_8(114, 101, 114, 117, 110, 88, 88, 88, 5);
+    let d: Label = label_from_8(114, 101, 114, 117, 0, 0, 0, 0, 4);
+    // Padding past len never compares, but different lens differ.
+    return from_assertion(equals_bool(true, label_eq(a, b) && label_eq(a, c) && label_eq(a, d) == false, 8104));
+}
+
+test prefix_matching() -> (result: TestResult) {
+    let r: Label = rerun_label();
+    let re: Label = label_from_8(114, 101, 0, 0, 0, 0, 0, 0, 2);
+    let empty: Label = label_empty();
+    let long: Label = match label_cat(r, r) {
+        CatOut.Value { l } => l,
+        CatOut.Truncated => r,
+    };
+    let good: bool = label_starts_with(r, re) && label_starts_with(r, empty) && label_starts_with(r, r);
+    let bad: bool = label_starts_with(re, r) == false && label_starts_with(r, long) == false;
+    return from_assertion(equals_bool(true, good && bad, 8105));
+}
+
+test utf8_bytes_stay_opaque() -> (result: TestResult) {
+    // "h" + U+00E9 (c3 a9) + "llo": 6 bytes, preserved exactly,
+    // counted as bytes with no grapheme claims.
+    let h: Label = label_from_8(104, 195, 169, 108, 108, 111, 0, 0, 6);
+    let good: bool = h.len == 6 && h.bytes[1] == 195 && h.bytes[2] == 169;
+    let back: Label = label_drop_last(label_drop_last(h));
+    return from_assertion(equals_bool(true, good && back.len == 4, 8106));
+}

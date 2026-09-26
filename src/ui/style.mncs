@@ -1,0 +1,73 @@
+mncs 0.18;
+
+// mncs.ui.style.v1 — explicit style records, separate from meaning.
+//
+// A style decorates a node id; it never defines identity, behavior,
+// layout, or accessibility. Projection ignores styles entirely, and
+// the suite proves it: the same table projects identically with and
+// without styles attached. No cascade, no themes in this slice —
+// those are recorded pressure (P-UI-STYLE), not half-built policy.
+
+module mncs.ui.style.v1;
+
+enum Emphasis { Normal, Strong, Muted }
+
+record StyleEntry { id: u64, emphasis: Emphasis }
+
+record StyleSheet { entries: [StyleEntry; 16], count: u64 }
+
+fn empty_entry() -> (result: StyleEntry) {
+    return StyleEntry { id: 0, emphasis: Emphasis.Normal };
+}
+
+fn empty_sheet() -> (result: StyleSheet) {
+    return StyleSheet {
+        entries: [
+            empty_entry(), empty_entry(), empty_entry(), empty_entry(),
+            empty_entry(), empty_entry(), empty_entry(), empty_entry(),
+            empty_entry(), empty_entry(), empty_entry(), empty_entry(),
+            empty_entry(), empty_entry(), empty_entry(), empty_entry()
+        ],
+        count: 0
+    };
+}
+
+enum StyleOut { Value { s: StyleSheet }, Full }
+
+fn style_set(s: StyleSheet, id: u64, e: Emphasis) -> (result: StyleOut) {
+    if s.count >= 16 {
+        return StyleOut.Full;
+    }
+    return StyleOut.Value {
+        s: StyleSheet {
+            entries: replace(s.entries, s.count, StyleEntry { id: id, emphasis: e }),
+            count: s.count + 1
+        }
+    };
+}
+
+enum EmphasisOut { Value { e: Emphasis }, Missing }
+
+fn style_get(s: StyleSheet, id: u64) -> (result: EmphasisOut) {
+    iterate i over s.entries carrying out: EmphasisOut = EmphasisOut.Missing {
+        next out = style_cell(out, s, id, i);
+    }
+    return out;
+}
+
+fn style_cell(out: EmphasisOut, s: StyleSheet, id: u64, i: u64) -> (result: EmphasisOut) {
+    return match out {
+        EmphasisOut.Value { e } => out,
+        EmphasisOut.Missing => style_live(s, id, i),
+    };
+}
+
+fn style_live(s: StyleSheet, id: u64, i: u64) -> (result: EmphasisOut) {
+    if i >= s.count {
+        return EmphasisOut.Missing;
+    }
+    if s.entries[i].id == id {
+        return EmphasisOut.Value { e: s.entries[i].emphasis };
+    }
+    return EmphasisOut.Missing;
+}

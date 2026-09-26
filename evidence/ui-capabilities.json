@@ -1,0 +1,45 @@
+{
+  "capabilities": [
+    "bounded label text as explicit bytes with truncation refusal",
+    "node arena with stable u64 identity and push-time layout inputs",
+    "focus ownership with traversal and removal resolution",
+    "typed semantic events with intent-data routing",
+    "deterministic cell layout with pure resize",
+    "renderer-neutral slot projection with semantic lookup",
+    "identity-keyed reconciliation with focus verdicts",
+    "explicit style records separate from semantics",
+    "structural accessibility validation",
+    "status-board fixture proving the full interaction loop"
+  ],
+  "doc": "docs/UI_MODEL.md",
+  "formulation": {
+    "events": "semantic Activate/Edit/Select/Focus; intents as (op, arg) data",
+    "state": "board canonical, focus UI-owned, field text table-resident, rows derived",
+    "structure": "flat 64-node arena; parents before children; depth cap 8"
+  },
+  "history": [
+    "bootstrap: architecture docs only, no implementation",
+    "foundation: first canonical native implementation (this revision)"
+  ],
+  "implementation": "first and only canonical implementation; no version forks, no native/host split, no compatibility layers",
+  "language": "mncs 0.18",
+  "meaning": "typed accessible testable agent-readable human interaction; explicitly not a terminal renderer, operation executor, or state database",
+  "modules": [
+    "mncs.ui.text.v1",
+    "mncs.ui.node.v1",
+    "mncs.ui.build.v1",
+    "mncs.ui.focus.v1",
+    "mncs.ui.event.v1",
+    "mncs.ui.layout.v1",
+    "mncs.ui.render.v1",
+    "mncs.ui.reconcile.v1",
+    "mncs.ui.style.v1",
+    "mncs.ui.a11y.v1",
+    "mncs.ui.app.v1"
+  ],
+  "neighbors": {
+    "consumes": ["mncs-test (execution)"],
+    "feeds": ["tui (future terminal adapter)", "web/desktop (future renderers)"],
+    "read_only": ["mncs-language", "mncs-compiler", "mncs-atomic", "mncs-automation", "mncs-control", "mncs-doc", "mncs-fem", "mncs-fluid", "mncs-media", "mncs-physics", "mncs-tui", "mncs-signal"]
+  }
+}

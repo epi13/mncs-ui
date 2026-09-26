@@ -1,0 +1,176 @@
+mncs 0.18;
+
+// Native contracts for the node arena: root/child pushes, duplicate
+// and orphan refusal, depth cap, lookout by id, push-time layout
+// inputs (depth/kids/height/sibling anchors), bounded-table full
+// behavior, and the ephemeral text boundary write.
+
+module mncs.ui.test.node.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+use mncs.ui.text;
+use mncs.ui.node;
+use mncs.ui.build;
+
+fn nm() -> (result: Label) {
+    return label_from_8(110, 109, 0, 0, 0, 0, 0, 0, 2);
+}
+
+fn push_ok(t: Table, n: Node) -> (result: Table) {
+    return match table_push(t, n) {
+        PushOut.Value { t: nt } => nt,
+        PushOut.Full => t,
+        PushOut.DupId => t,
+        PushOut.BadParent => t,
+        PushOut.BadDepth => t,
+    };
+}
+
+fn two_level() -> (result: Table) {
+    let t0: Table = table_empty();
+    let t1: Table = push_ok(t0, screen(1, nm()));
+    let t2: Table = push_ok(t1, row(2, 1, nm()));
+    return push_ok(t2, button(3, 2, nm(), 7));
+}
+
+test root_and_child_push() -> (result: TestResult) {
+    let t: Table = two_level();
+    let good: bool = match table_get(t, 3) {
+        FindOut.Value { n, idx } => n.parent == 2 && n.depth == 2 && n.intent == 7,
+        FindOut.Missing => false,
+    };
+    let root: bool = match table_get(t, 1) {
+        FindOut.Value { n, idx } => n.depth == 0 && n.kids == 1 && idx == 0,
+        FindOut.Missing => false,
+    };
+    return from_assertion(equals_bool(true, t.count == 3 && good && root, 8201));
+}
+
+test duplicate_and_orphan_refused() -> (result: TestResult) {
+    let t: Table = two_level();
+    let dup: bool = match table_push(t, button(3, 2, nm(), 7)) {
+        PushOut.Value { t } => false,
+        PushOut.Full => false,
+        PushOut.DupId => true,
+        PushOut.BadParent => false,
+        PushOut.BadDepth => false,
+    };
+    let orphan: bool = match table_push(t, button(9, 99, nm(), 7)) {
+        PushOut.Value { t } => false,
+        PushOut.Full => false,
+        PushOut.DupId => false,
+        PushOut.BadParent => true,
+        PushOut.BadDepth => false,
+    };
+    let second_root: bool = match table_push(t, screen(8, nm())) {
+        PushOut.Value { t } => false,
+        PushOut.Full => false,
+        PushOut.DupId => false,
+        PushOut.BadParent => true,
+        PushOut.BadDepth => false,
+    };
+    let missing: bool = match table_get(t, 99) {
+        FindOut.Value { n, idx } => false,
+        FindOut.Missing => true,
+    };
+    return from_assertion(equals_bool(true, dup && orphan && second_root && missing, 8202));
+}
+
+test heights_and_anchors_maintained() -> (result: TestResult) {
+    // screen(1) > row(2) > button(3): heights bubble 1/1/1;
+    // button is sibling 0 at y-offset 0 under row.
+    let t: Table = two_level();
+    let h: bool = match table_get(t, 1) {
+        FindOut.Value { n, idx } => n.h == 1,
+        FindOut.Missing => false,
+    };
+    let rh: bool = match table_get(t, 2) {
+        FindOut.Value { n, idx } => n.h == 1 && n.kids == 1,
+        FindOut.Missing => false,
+    };
+    let anchor: bool = match table_get(t, 3) {
+        FindOut.Value { n, idx } => n.sx == 0 && n.sy == 0 && n.h == 1,
+        FindOut.Missing => false,
+    };
+    return from_assertion(equals_bool(true, h && rh && anchor, 8203));
+}
+
+test depth_cap_enforced() -> (result: TestResult) {
+    // Chain 1..9 below the root: depth 9 refuses.
+    let t0: Table = push_ok(table_empty(), screen(1, nm()));
+    let t1: Table = push_ok(t0, column(2, 1, nm()));
+    let t2: Table = push_ok(t1, column(3, 2, nm()));
+    let t3: Table = push_ok(t2, column(4, 3, nm()));
+    let t4: Table = push_ok(t3, column(5, 4, nm()));
+    let t5: Table = push_ok(t4, column(6, 5, nm()));
+    let t6: Table = push_ok(t5, column(7, 6, nm()));
+    let t7: Table = push_ok(t6, column(8, 7, nm()));
+    let t8: Table = push_ok(t7, column(9, 8, nm()));
+    let deep: bool = match table_get(t8, 9) {
+        FindOut.Value { n, idx } => n.depth == 8,
+        FindOut.Missing => false,
+    };
+    let refused: bool = match table_push(t8, column(10, 9, nm())) {
+        PushOut.Value { t } => false,
+        PushOut.Full => false,
+        PushOut.DupId => false,
+        PushOut.BadParent => false,
+        PushOut.BadDepth => true,
+    };
+    return from_assertion(equals_bool(true, deep && refused, 8204));
+}
+
+test table_full_at_sixty_four() -> (result: TestResult) {
+    let t: Table = fill_table(table_empty(), 1);
+    let full: bool = match table_push(t, button(500, 1, nm(), 0)) {
+        PushOut.Value { t } => false,
+        PushOut.Full => true,
+        PushOut.DupId => false,
+        PushOut.BadParent => false,
+        PushOut.BadDepth => false,
+    };
+    return from_assertion(equals_bool(true, t.count == 64 && full, 8205));
+}
+
+fn fill_table(t: Table, base: u64) -> (result: Table) {
+    iterate i over fill_ids() carrying acc: Table = t {
+        next acc = fill_cell(acc, base, i);
+    }
+    return acc;
+}
+
+fn fill_ids() -> (result: [u64; 64]) {
+    return [0; 64];
+}
+
+fn fill_cell(acc: Table, base: u64, i: u64) -> (result: Table) {
+    if base + i == 1 {
+        return push_ok(acc, screen(1, nm()));
+    }
+    return push_ok(acc, text_line(base + i, 1, nm()));
+}
+
+test set_text_boundary_write() -> (result: TestResult) {
+    let t: Table = push_ok(push_ok(table_empty(), screen(1, nm())), input(2, 1, nm(), nm(), 3));
+    let v: Label = label_from_8(104, 105, 0, 0, 0, 0, 0, 0, 2);
+    let good: bool = match table_set_text(t, 2, v) {
+        SetTextOut.Value { t: nt } => match table_get(nt, 2) {
+            FindOut.Value { n, idx } => label_eq(n.text, v),
+            FindOut.Missing => false,
+        },
+        SetTextOut.Missing => false,
+        SetTextOut.WrongKind => false,
+    };
+    let wrong: bool = match table_set_text(t, 1, v) {
+        SetTextOut.Value { t } => false,
+        SetTextOut.Missing => false,
+        SetTextOut.WrongKind => true,
+    };
+    let missing: bool = match table_set_text(t, 99, v) {
+        SetTextOut.Value { t } => false,
+        SetTextOut.Missing => true,
+        SetTextOut.WrongKind => false,
+    };
+    return from_assertion(equals_bool(true, good && wrong && missing, 8206));
+}
