@@ -1,0 +1,17 @@
+{
+  "schema_version": "mncs.project-intent/1",
+  "purpose": "Declarative, machine-native user-interface infrastructure for MNCS: expressive application code with inspectable UI graphs, state dependencies, effects, and accessibility semantics.",
+  "entry": [
+    "python3 scripts/run_tests.py"
+  ],
+  "milestones": [
+    {
+      "id": "mncs-ui:projection-conformance",
+      "title": "Declared ambient projection surfaces satisfy their contract",
+      "subject_slot": "declarations",
+      "evidence": "projection-conformance",
+      "dependencies": [],
+      "blockers": []
+    }
+  ]
+}

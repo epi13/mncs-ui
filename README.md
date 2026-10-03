@@ -1,5 +1,8 @@
 # mncs-ui
 
+<!-- MNCS:generated:begin -->
+<!-- MNCS:generated:end -->
+
 Declarative, machine-native user-interface infrastructure for MNCS.
 
 `mncs-ui` is intended to pressure `mncs-language` on the opposite end of scientific computing: expressive application code, reactive state, events, accessibility, composition, animation, native rendering, and developer ergonomics.
