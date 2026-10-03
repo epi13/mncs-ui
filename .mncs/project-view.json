@@ -1,0 +1,22 @@
+{
+  "capabilities": [
+    {
+      "contract": "ui-framework",
+      "fingerprint_sources": [
+        "src/ui/"
+      ],
+      "kind": "mncs-library",
+      "stability": "experimental",
+      "version": "0.1"
+    }
+  ],
+  "dependencies": [],
+  "entry": [
+    "python3 scripts/run_tests.py"
+  ],
+  "purpose": "Declarative, machine-native user-interface infrastructure for MNCS: expressive application code with inspectable UI graphs, state dependencies, effects, and accessibility semantics.",
+  "repository": "mncs-ui",
+  "schema_version": "mncs.project-view/1",
+  "source_identity": "sha256:5a6fbb364ab4a4c012f8d38a769e5ba54c1480d8ed36d1d55fc524708abdfc45",
+  "structure": {}
+}

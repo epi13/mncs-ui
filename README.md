@@ -1,6 +1,19 @@
 # mncs-ui
 
 <!-- MNCS:generated:begin -->
+## Project entry
+
+Declarative, machine-native user-interface infrastructure for MNCS: expressive application code with inspectable UI graphs, state dependencies, effects, and accessibility semantics.
+
+```bash
+python3 scripts/run_tests.py
+```
+
+Declared capabilities (declarations do not establish execution health):
+
+- `ui-framework/0.1` — mncs-library (experimental)
+
+Semantic sources and ownership: `.mncs/projections.json`.
 <!-- MNCS:generated:end -->
 
 Declarative, machine-native user-interface infrastructure for MNCS.
